@@ -1,0 +1,34 @@
+name: Bug report / Ошибка
+description: Ошибка OCR, карточки перевода, бинда или запуска
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо за пример. Не прикладывайте API-ключи, личный words.txt или скриншоты приватных окон.
+        Please remove personal content and API keys before submitting.
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Шаги воспроизведения / Steps to reproduce
+      description: Что сделали, что ожидали и что получили?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Окружение / Environment
+      description: Версии WayLookup, Python, Hyprland; масштаб и число мониторов; игра/приложение.
+    validations:
+      required: true
+  - type: textarea
+    id: translation
+    attributes:
+      label: OCR и переводчик / OCR and translation
+      description: Языки OCR, PSM, провайдер, используемый словарь и точный текст ошибки.
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Диагностика / Diagnostics
+      description: Вывод waylookup doctor без личных данных.
+      render: text

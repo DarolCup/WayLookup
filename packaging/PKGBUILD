@@ -1,0 +1,35 @@
+# Local source-archive build. See README.md; no third-party dictionary data is bundled.
+pkgname=waylookup
+pkgver=0.1.1
+pkgrel=1
+pkgdesc='Click-to-translate screen overlay for Hyprland'
+arch=('any')
+license=('MIT')
+depends=('python' 'python-gobject' 'python-cairo' 'gtk3' 'gtk-layer-shell'
+         'hyprland' 'grim' 'tesseract' 'tesseract-data-eng' 'libayatana-appindicator')
+makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
+optdepends=('tesseract-data-rus: OCR of Russian text'
+            'ollama: local AI translation (requires a downloaded model)')
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$srcdir/$pkgname-$pkgver"
+  python -m build --wheel --no-isolation
+}
+
+check() {
+  cd "$srcdir/$pkgname-$pkgver"
+  python -m unittest discover -s tests -v
+}
+
+package() {
+  cd "$srcdir/$pkgname-$pkgver"
+  python -m installer --destdir="$pkgdir" dist/*.whl
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 packaging/io.github.waylookup.WayLookup.desktop \
+    "$pkgdir/usr/share/applications/io.github.waylookup.WayLookup.desktop"
+  install -Dm644 packaging/waylookup.service "$pkgdir/usr/lib/systemd/user/waylookup.service"
+  install -Dm644 examples/en-ru.json "$pkgdir/usr/share/waylookup/examples/en-ru.json"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/waylookup/README.md"
+}

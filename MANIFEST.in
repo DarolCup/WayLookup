@@ -1,0 +1,9 @@
+include LICENSE README.md
+recursive-include packaging *.desktop *.service PKGBUILD
+recursive-include examples *.json
+recursive-include docs *.md *.png
+recursive-include tests *.py
+recursive-include scripts waylookup
+recursive-include scripts *.py
+recursive-include .github *.yml *.md
+include CHANGELOG.md CONTRIBUTING.md

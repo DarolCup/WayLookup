@@ -1,0 +1,40 @@
+window { background-color: transparent; color: #e9eff5; font-family: Sans; }
+.translation-card, .capture-bar, .settings-window {
+  background-color: #141d2a;
+  border: 1px solid #334758;
+  border-radius: 18px;
+}
+.translation-card { box-shadow: 0 16px 44px rgba(0,0,0,0.5); }
+.card-heading { padding: 18px 24px 16px; border-bottom: 1px solid #2b3b4c; }
+.card-body { padding: 18px 24px; }
+.card-footer { padding: 12px 20px; border-top: 1px solid #2b3b4c; background-color: #111a26; border-radius: 0 0 18px 18px; }
+.capture-bar { padding: 12px 18px; }
+.brand { color: #8ce8d6; font-size: 10px; font-weight: bold; letter-spacing: 2px; }
+.language-badge { color: #b6c6d7; background-color: #233145; border-radius: 6px; padding: 4px 9px; font-size: 11px; }
+.selected-word { font-size: 32px; font-weight: bold; color: #f4f8fc; }
+.word { font-size: 30px; font-weight: bold; color: #f5f8fc; }
+.muted { color: #95a9bb; font-size: 11px; }
+.section { color: #88a0b6; font-size: 10px; font-weight: bold; letter-spacing: 1px; }
+.source-badge { color: #83cfc1; font-size: 11px; padding: 3px 8px; border-radius: 5px; background-color: #203539; }
+.meaning-number { color: #617e93; font-size: 11px; font-weight: bold; padding-top: 3px; }
+.meaning-text { color: #eaf2f8; font-size: 16px; }
+.article-text { color: #adbfce; font-size: 13px; padding: 10px 0; }
+.sentence-panel { background-color: #1c2a3a; border: 1px solid #304457; border-radius: 10px; padding: 14px 16px; }
+.sentence-translation { color: #f2f7fc; font-size: 17px; }
+.original-caption { color: #6f879d; font-size: 9px; font-weight: bold; letter-spacing: 1px; margin-top: 4px; }
+.context { color: #a6b7c8; font-size: 13px; }
+.empty-state { color: #adbfce; font-size: 14px; }
+.error-panel { background-color: #352b22; border: 1px solid #635039; border-radius: 9px; padding: 12px; }
+.error-title { color: #f0c28d; font-size: 12px; font-weight: bold; }
+.warning { color: #d7b491; font-size: 12px; }
+.status { font-size: 13px; }
+button { border-radius: 7px; padding: 6px 12px; background: #25364a; color: #e3edf5; border: 1px solid #3a5269; box-shadow: none; font-size: 12px; }
+button:hover { background: #354e65; }
+button:disabled { color: #6f8497; background: #1a2735; }
+button.icon-button { background: transparent; border-color: transparent; padding: 2px 6px; }
+button.icon-button:hover { background: #2b3b4e; }
+button.suggested-action { background: #287a73; }
+entry, combobox button { background: #202b3e; color: #e9eff5; }
+scrolledwindow { border: none; }
+expander > title { color: #87bfb6; font-size: 11px; }
+scrollbar slider { background-color: #456176; min-width: 4px; border-radius: 3px; }

@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+.ruff_cache/
+.pytest_cache/
+.env
+*.log
+packaging/*.tar.gz
+packaging/*.pkg.tar.*
+packaging/src/
+packaging/pkg/
+release/

@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Name=WayLookup
+Comment=Click words on your screen to translate them
+Comment[ru]=Перевод слов и предложений на экране
+Exec=waylookup daemon
+Icon=accessories-dictionary
+Terminal=false
+Categories=Education;Languages;
+StartupNotify=false
+Actions=Capture;Settings;
+
+[Desktop Action Capture]
+Name=Translate screen
+Name[ru]=Перевести экран
+Exec=waylookup capture
+
+[Desktop Action Settings]
+Name=Settings
+Name[ru]=Настройки
+Exec=waylookup settings
