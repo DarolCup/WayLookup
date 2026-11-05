@@ -110,8 +110,4 @@ An optional `python tests/live_smoke.py` runs the real overlay temporarily over 
 
 [Architecture](architecture.md) · [Contributing](../CONTRIBUTING.md) · [Changelog](../CHANGELOG.md) · [MIT license](../LICENSE)
 
-## Credits and AI assistance
-
-**Most of WayLookup's code and documentation was generated and refined with OpenAI Codex.** d11zy provided the idea, requirements and feedback from running the application on Arch Linux + Hyprland. This project is not presented as entirely human-written work without AI assistance.
-
-See [CONTRIBUTORS.md](../CONTRIBUTORS.md) for the roles of the maintainer and the AI tool.
+The code was written by AI (OpenAI Codex).
