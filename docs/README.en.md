@@ -109,3 +109,9 @@ python -m build
 An optional `python tests/live_smoke.py` runs the real overlay temporarily over the focused monitor using isolated configuration, synthetic content and a local HTTP fixture. It does not send text to external translators.
 
 [Architecture](architecture.md) · [Contributing](../CONTRIBUTING.md) · [Changelog](../CHANGELOG.md) · [MIT license](../LICENSE)
+
+## Credits and AI assistance
+
+**Most of WayLookup's code and documentation was generated and refined with OpenAI Codex.** d11zy provided the idea, requirements and feedback from running the application on Arch Linux + Hyprland. This project is not presented as entirely human-written work without AI assistance.
+
+See [CONTRIBUTORS.md](../CONTRIBUTORS.md) for the roles of the maintainer and the AI tool.
