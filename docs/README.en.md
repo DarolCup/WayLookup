@@ -84,6 +84,7 @@ The system Python can use Arch's PyGObject packages directly. If using a virtual
 ## Translation and dictionaries
 
 - The overlay opens with OCR highlights already in place. Dense frames with a suitable horizontal gap can run OCR in two parallel strips. Screenshots stay local.
+- Automatic OCR runs a second pass when the first finds sparse text. For dense game interfaces with scattered labels, choose **11 · Games and sparse text** in OCR settings. The second pass uses local contrast when Pillow is available.
 - StarDict (`.ifo`, `.idx`/`.idx.gz`, `.dict`/`.dict.dz`, optional `.syn`) and JSON dictionaries, indexed locally in SQLite.
 - MyMemory is the default sentence provider and has a 500-byte request limit. Word and sentence providers can be selected independently.
 - Google Cloud Translation uses `WAYLOOKUP_GOOGLE_API_KEY`. For the user service, put the variable in `~/.config/waylookup/providers.env` and restart `waylookup.service`. [Google Cloud Translation API](https://docs.cloud.google.com/translate/docs/reference/rest/v2/translate)

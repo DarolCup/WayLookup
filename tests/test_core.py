@@ -13,7 +13,7 @@ from waylookup.dictionary import Dictionary, Sense
 from waylookup.default_dictionaries import wikdict_definitions
 from waylookup.history import save_lookup
 from waylookup.hyprland import Hotkey
-from waylookup.ocr import STRIP_OVERLAP, Word, parse_tsv, recognize, sentence_for
+from waylookup.ocr import STRIP_OVERLAP, Word, merge_words, parse_tsv, recognize, sentence_for
 from waylookup.translation import LookupResult, TranslationError, Translator, request_json
 
 
@@ -71,6 +71,32 @@ class OCRTests(unittest.TestCase):
         words = recognize(b"image", Config())
         self.assertEqual([(word.text, word.y) for word in words], [("top", 120), ("bottom", 210)])
         self.assertNotEqual(words[0].block, words[1].block)
+
+    def test_sparse_words_join_existing_lines_without_duplicate_highlights(self):
+        first = Word("Take", 10, 10, 30, 15, 95, (1, 1), 1, 1)
+        last = Word("sword.", 72, 10, 42, 15, 95, (1, 1), 1, 1)
+        missing = Word("the", 45, 10, 20, 15, 92, (1, 1), 1, 1)
+        duplicate = Word("Take", 11, 11, 28, 14, 94, (1, 1), 1, 1)
+        menu = Word("Inventory", 500, 60, 70, 15, 90, (1, 1), 1, 2)
+        result = merge_words([first, last], [duplicate, missing, menu])
+        self.assertEqual([word.text for word in result], ["Take", "the", "sword.", "Inventory"])
+        self.assertEqual(sentence_for(result, result[1]), "Take the sword.")
+        self.assertNotEqual(result[-1].block, first.block)
+
+    @patch("waylookup.ocr.recognize_sparse")
+    @patch("waylookup.ocr.recognize_primary")
+    def test_sparse_pass_is_automatic_for_sparse_screens_and_optional_for_dense(self, primary, sparse):
+        png = b"\x89PNG\r\n\x1a\n" + b"\0" * 8 + struct.pack(">II", 1920, 1080)
+        word = Word("Map", 10, 10, 30, 15, 95, (1, 1), 1, 1)
+        primary.return_value = [word] * 100
+        self.assertEqual(recognize(png, Config()), primary.return_value)
+        sparse.assert_not_called()
+        sparse.return_value = []
+        self.assertEqual(recognize(png, Config(ocr_psm=11)), primary.return_value)
+        self.assertEqual(sparse.call_count, 1)
+        primary.return_value = [word]
+        self.assertEqual(recognize(png, Config()), primary.return_value)
+        self.assertEqual(sparse.call_count, 2)
 
 
 class ConfigTests(unittest.TestCase):
