@@ -77,7 +77,10 @@ if "$uninstall"; then
         user_manager=true
         if [[ -f $unit_dir/waylookup.service ]]; then
             systemctl --user daemon-reload
-            systemctl --user stop waylookup.service
+            loaded_unit=$(systemctl --user show --property=FragmentPath --value waylookup.service)
+            if [[ -n $loaded_unit && $loaded_unit -ef $unit_dir/waylookup.service ]]; then
+                systemctl --user stop waylookup.service
+            fi
         fi
     fi
     if [[ -x $launcher ]]; then
