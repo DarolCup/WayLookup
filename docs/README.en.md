@@ -12,7 +12,7 @@ This is an early independent project, not affiliated with Lookupper. The screens
 
 ## Fedora KDE Plasma and GNOME
 
-### Quick install
+### Quick install and update
 
 Run this in a Wayland session to install or update WayLookup.
 

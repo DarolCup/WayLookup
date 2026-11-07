@@ -7,9 +7,9 @@ import unicodedata
 
 from .dictionary import Sense
 
-# Strip recognised formatting only: comparisons such as "x < y" must stay readable.
+# Strip recognised formatting, including MyMemory's <g id="…"> wrappers.
 HTML_TAG = re.compile(
-    r"</?(?:html|body|div|p|br|span|b|strong|i|em|ul|ol|li|font|a|sup|sub)(?:\s[^>]*?)?\s*/?>",
+    r"</?(?:html|body|div|p|br|span|b|strong|i|em|ul|ol|li|font|a|sup|sub|g)(?:\s[^>]*?)?\s*/?>",
     re.IGNORECASE,
 )
 BLOCK_TAG = re.compile(r"</?(?:div|p|br|li)\b[^>]*>", re.IGNORECASE)

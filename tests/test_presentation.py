@@ -46,6 +46,20 @@ class PresentationTests(unittest.TestCase):
             required_text("<p> </p>", "test")
 
     @patch("waylookup.translation.request_json")
+    def test_mymemory_formatting_group_is_removed_from_word_translation(self, request):
+        for translated in (
+            '<g id="Documents.NoBold">Английский язык</g>',
+            '&lt;g id=&quot;Documents.NoBold&quot;&gt;Английский язык&lt;/g&gt;',
+        ):
+            with self.subTest(translated=translated):
+                request.return_value = {
+                    "responseStatus": 200,
+                    "responseData": {"translatedText": translated},
+                }
+                senses = Translator(None).translate("English", Config())
+                self.assertEqual(senses, [Sense("Английский язык", "MyMemory · переводчик")])
+
+    @patch("waylookup.translation.request_json")
     def test_malformed_mymemory_envelope_becomes_readable_error(self, request):
         request.return_value = {"responseStatus": 200, "responseData": None}
         with self.assertRaisesRegex(TranslationError, "некорректный ответ"):
