@@ -2,13 +2,43 @@
 
 [Русский README](../README.md)
 
-Click a word on a frozen screenshot to translate the word and its sentence. **Python · Arch Linux · Hyprland · Wayland**. The current interface is in Russian; default translation direction is English → Russian.
+Click a word on a frozen screenshot to translate the word and its sentence. WayLookup runs on Wayland with Hyprland on Arch Linux, or KDE Plasma and GNOME on Fedora. The current interface is in Russian and the default translation direction is English → Russian.
 
 ![WayLookup overlay](screenshot.png)
 
-Press **Alt+Q**, click a highlighted word, read its dictionary meanings and sentence translation at the top centre of the screen, then press **Esc**. The shortcut is configurable. A tray menu provides capture, settings, vocabulary and exit.
+Start a capture, click a highlighted word, read its dictionary meanings and sentence translation at the top centre of the screen, then press **Esc**. On Hyprland, the default shortcut is **Alt+Q**. A tray menu provides capture, settings, vocabulary and exit on desktops with a system tray.
 
 This is an early independent project, not affiliated with Lookupper. The screenshot uses a synthetic scene and a local test server; it demonstrates the interface rather than translation quality.
+
+## Fedora KDE Plasma and GNOME
+
+Run the installer as your normal user in a Wayland session. It detects the desktop, installs system dependencies using `sudo dnf`, and adds `waylookup` to `~/.local/bin`.
+
+**With curl**
+
+```bash
+installer=$(mktemp)
+curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/codex/fedora-desktops/install-fedora.sh -o "$installer" &&
+  bash "$installer" --ref codex/fedora-desktops
+rm -f "$installer"
+```
+
+**With Git**
+
+```bash
+git clone --branch codex/fedora-desktops https://github.com/DarolCup/WayLookup.git
+cd WayLookup
+./install-fedora.sh
+```
+
+```bash
+~/.local/bin/waylookup doctor
+~/.local/bin/waylookup settings
+```
+
+Bind `/home/YOUR_USER/.local/bin/waylookup capture` to a shortcut such as **Alt+Q**. On **Plasma**, open **System Settings → Shortcuts**. On **GNOME**, open **Keyboard → View and Customize Shortcuts → Custom Shortcuts**. GNOME prompts you to choose and share a monitor at capture time.
+
+To update, rerun the installer with the latest sources, run `~/.local/bin/waylookup quit` and invoke capture again. Outside a graphical session, use `--desktop plasma` or `--desktop gnome` to select the dependencies.
 
 ## Install on Arch Linux
 
@@ -72,7 +102,7 @@ waylookup quit
 
 For a checkout, prefix commands with `python -m` while inside the project directory. Configuration is stored in `~/.config/waylookup/config.json`. Vocabulary goes to `~/.local/share/waylookup/words.txt`: word meanings, sources, context and sentence translation. The vocabulary path is configurable. Repeated identical contexts are deduplicated. XDG directory overrides are supported.
 
-The GUI applies changes immediately; restart after editing JSON manually. Supported shortcut examples: `ALT+Q`, `SUPER+SHIFT+T`, `CTRL+F8`. Existing shortcut conflicts are reported rather than overwritten.
+The GUI applies changes immediately. Restart after editing JSON manually. On Hyprland, the WayLookup settings accept shortcuts such as `ALT+Q`, `SUPER+SHIFT+T` and `CTRL+F8`, and report existing shortcut conflicts. On Fedora, the desktop controls the shortcut.
 
 ## Autostart
 
@@ -96,9 +126,9 @@ A user service is included for sessions that correctly manage `graphical-session
 
 ## Limits and validation
 
-**The screenshot freezes visually; the game process may keep running.** Pause the game yourself if needed. Only the focused monitor is covered. OCR accuracy depends on fonts, size, contrast and layout; sentence boundaries are heuristic.
+**The game can keep running while WayLookup shows the screenshot.** Only the captured monitor is covered. OCR accuracy depends on fonts, size, contrast and layout. Sentence boundaries are heuristic.
 
-Tested live on Hyprland 0.57.0 with a single 1920×1080 monitor. Legacy Hyprlang, mixed DPI, HDR, Gamescope and other compositors have not been validated live. Ollama is tested against response contracts rather than a live model. Startup of large models may require a longer timeout.
+Tested with Hyprland 0.57.0 and in isolated Fedora 45 sessions with KDE Plasma 6.8.2 and GNOME 51.1. Mixed DPI, HDR and Gamescope still need live testing. Ollama is tested against response contracts. Startup of large models may require a longer timeout.
 
 ```bash
 python -m unittest discover -s tests -v

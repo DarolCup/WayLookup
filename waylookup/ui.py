@@ -1,4 +1,4 @@
-"""GTK3 + layer-shell UI; all GTK calls stay on the main thread."""
+"""GTK3 UI; all GTK calls stay on the main thread."""
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -11,14 +11,14 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-gi.require_version("GtkLayerShell", "0.1")
-from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, GtkLayerShell  # noqa: E402
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk  # noqa: E402
 
 from .card import TranslationCard  # noqa: E402
 from .config import Config  # noqa: E402
+from .desktop import CaptureCancelled, capture_screen, current_desktop  # noqa: E402
 from .dictionary import Dictionary  # noqa: E402
 from .history import save_lookup  # noqa: E402
-from .hyprland import Hotkey, capture_output, focused_monitor, watch_reload  # noqa: E402
+from .hyprland import Hotkey, watch_reload  # noqa: E402
 from .ocr import recognize, sentence_for  # noqa: E402
 from .translation import LookupResult, Translator  # noqa: E402
 
@@ -34,22 +34,22 @@ def label(text="", css=None, wrap=True):
     return widget
 
 
-def layer_window(window, namespace, monitor=None, fullscreen=False):
-    GtkLayerShell.init_for_window(window)
-    GtkLayerShell.set_namespace(window, namespace)
-    GtkLayerShell.set_layer(window, GtkLayerShell.Layer.OVERLAY)
-    GtkLayerShell.set_exclusive_zone(window, -1)  # Cover panels; never reserve desktop space.
-    GtkLayerShell.set_keyboard_mode(window, GtkLayerShell.KeyboardMode.EXCLUSIVE)
+def layer_window(shell, window, namespace, monitor=None, fullscreen=False):
+    shell.init_for_window(window)
+    shell.set_namespace(window, namespace)
+    shell.set_layer(window, shell.Layer.OVERLAY)
+    shell.set_exclusive_zone(window, -1)  # Cover panels; never reserve desktop space.
+    shell.set_keyboard_mode(window, shell.KeyboardMode.EXCLUSIVE)
     if monitor:
-        GtkLayerShell.set_monitor(window, monitor)
+        shell.set_monitor(window, monitor)
     if fullscreen:
         for edge in (
-            GtkLayerShell.Edge.TOP,
-            GtkLayerShell.Edge.BOTTOM,
-            GtkLayerShell.Edge.LEFT,
-            GtkLayerShell.Edge.RIGHT,
+            shell.Edge.TOP,
+            shell.Edge.BOTTOM,
+            shell.Edge.LEFT,
+            shell.Edge.RIGHT,
         ):
-            GtkLayerShell.set_anchor(window, edge, True)
+            shell.set_anchor(window, edge, True)
     window.set_decorated(False)
     window.set_app_paintable(True)
     visual = window.get_screen().get_rgba_visual()
@@ -57,8 +57,26 @@ def layer_window(window, namespace, monitor=None, fullscreen=False):
         window.set_visual(visual)
 
 
+def find_monitor(display, position):
+    count = display.get_n_monitors()
+    if count == 1:
+        return 0, display.get_monitor(0)
+    if position is not None:
+        for index in range(count):
+            monitor = display.get_monitor(index)
+            geometry = monitor.get_geometry()
+            if (geometry.x, geometry.y) == (position["x"], position["y"]):
+                return index, monitor
+    raise RuntimeError("Не удалось определить монитор для оверлея. Повторите захват.")
+
+
 class Overlay(Gtk.ApplicationWindow):
-    def __init__(self, app, png: bytes, monitor: dict):
+    def __init__(self, app, png: bytes, monitor: dict | None):
+        display = Gdk.Display.get_default()
+        if app.layer_shell:
+            gdk_monitor = display.get_monitor_at_point(monitor["x"] + 1, monitor["y"] + 1)
+        else:
+            index, gdk_monitor = find_monitor(display, monitor)
         super().__init__(application=app, title="WayLookup")
         self.app = app
         self.words = []
@@ -70,10 +88,11 @@ class Overlay(Gtk.ApplicationWindow):
         loader.write(png)
         loader.close()
         self.pixbuf = loader.get_pixbuf()
-        display = Gdk.Display.get_default()
-        # GTK and Hyprland both report logical layout coordinates, including fractional scale.
-        gdk_monitor = display.get_monitor_at_point(monitor["x"] + 1, monitor["y"] + 1)
-        layer_window(self, "waylookup", gdk_monitor, fullscreen=True)
+        if app.layer_shell:
+            layer_window(app.layer_shell, self, "waylookup", gdk_monitor, fullscreen=True)
+        else:
+            self.set_decorated(False)
+            self.fullscreen_on_monitor(self.get_screen(), index)
         self.connect("key-press-event", self.on_key)
         self.connect("destroy", lambda *_: self.app.overlay_closed(self))
         overlay = Gtk.Overlay()
@@ -105,6 +124,8 @@ class Overlay(Gtk.ApplicationWindow):
         bar.pack_start(exit_button, False, False, 0)
         overlay.add_overlay(bar)
         self.show_all()
+        if not app.layer_shell:
+            self.present()
         self.card.hide()
 
     def set_words(self, words):
@@ -191,14 +212,18 @@ class Settings(Gtk.ApplicationWindow):
         super().__init__(application=app, title="WayLookup — Настройки")
         self.app = app
         self.get_style_context().add_class("settings-window")
-        layer_window(self, "waylookup-settings")
+        if app.layer_shell:
+            layer_window(app.layer_shell, self, "waylookup-settings")
         self.set_default_size(650, 720)
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16, margin=24)
         self.add(root)
         root.pack_start(label("WayLookup", "word"), False, False, 0)
-        root.pack_start(
-            label("Настройте перевод один раз — дальше достаточно бинда.", "muted"), False, False, 0
+        hint = (
+            "Настройте перевод один раз — дальше достаточно бинда."
+            if app.desktop == "hyprland"
+            else "Назначьте команду waylookup capture в системных настройках клавиатуры."
         )
+        root.pack_start(label(hint, "muted"), False, False, 0)
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         root.pack_start(scroller, True, True, 0)
@@ -206,9 +231,13 @@ class Settings(Gtk.ApplicationWindow):
         scroller.add(grid)
         self.inputs = {}
         row = 0
-        specs = [
-            ("hotkey", "Бинд", None),
-            ("register_hotkey", "Регистрировать бинд", "bool"),
+        specs = []
+        if app.desktop == "hyprland":
+            specs.extend([
+                ("hotkey", "Бинд", None),
+                ("register_hotkey", "Регистрировать бинд", "bool"),
+            ])
+        specs += [
             ("source", "Исходный язык", None),
             ("target", "Язык перевода", None),
             ("ocr_languages", "Языки OCR (eng+rus)", None),
@@ -300,6 +329,8 @@ class Settings(Gtk.ApplicationWindow):
             lambda _w, event: (self.destroy() or True) if event.keyval == Gdk.KEY_Escape else False,
         )
         self.show_all()
+        if not app.layer_shell:
+            self.present()
 
     def save(self, *_):
         try:
@@ -337,15 +368,21 @@ class Settings(Gtk.ApplicationWindow):
         chooser.add_filter(file_filter)
         chooser.connect("response", self.import_selected)
         self.chooser = chooser
-        # Native/portal dialogs are regular surfaces; hide our covering layer while choosing.
-        self.hide()
-        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+        if self.app.layer_shell:
+            # Native/portal dialogs are regular surfaces; hide our covering layer while choosing.
+            self.hide()
+            self.app.layer_shell.set_keyboard_mode(self, self.app.layer_shell.KeyboardMode.NONE)
+        else:
+            chooser.set_transient_for(self)
         chooser.show()
 
     def import_selected(self, chooser, response):
         self.chooser = None
-        self.show_all()
-        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.EXCLUSIVE)
+        if self.app.layer_shell:
+            self.show_all()
+            self.app.layer_shell.set_keyboard_mode(
+                self, self.app.layer_shell.KeyboardMode.EXCLUSIVE
+            )
         path = chooser.get_filename()
         chooser.destroy()
         if response != Gtk.ResponseType.ACCEPT or not path:
@@ -377,6 +414,15 @@ class Settings(Gtk.ApplicationWindow):
 
 class Application(Gtk.Application):
     def __init__(self):
+        self.desktop = current_desktop()
+        self.layer_shell = None
+        if self.desktop == "hyprland":
+            gi.require_version("GtkLayerShell", "0.1")
+            from gi.repository import GtkLayerShell
+
+            if not GtkLayerShell.is_supported():
+                raise RuntimeError("Композитор не поддерживает layer-shell")
+            self.layer_shell = GtkLayerShell
         super().__init__(
             application_id="io.github.waylookup.WayLookup",
             flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE,
@@ -411,12 +457,13 @@ class Application(Gtk.Application):
         self.setup_tray()
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.quit_signal)
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self.quit_signal)
-        GLib.idle_add(self.setup_hotkey)
-        threading.Thread(
-            target=watch_reload,
-            args=(lambda: GLib.idle_add(self.setup_hotkey), self.stop),
-            daemon=True,
-        ).start()
+        if self.desktop == "hyprland":
+            GLib.idle_add(self.setup_hotkey)
+            threading.Thread(
+                target=watch_reload,
+                args=(lambda: GLib.idle_add(self.setup_hotkey), self.stop),
+                daemon=True,
+            ).start()
 
     def do_command_line(self, command_line):
         args = command_line.get_arguments()
@@ -460,10 +507,11 @@ class Application(Gtk.Application):
                 return
             except (ValueError, ImportError):
                 continue
-        self.notify(
-            "Tray недоступен",
-            "Установите libayatana-appindicator и включите tray в панели. Доступны waylookup capture/settings/quit.",
-        )
+        if self.desktop != "gnome":
+            self.notify(
+                "Tray недоступен",
+                "Установите AppIndicator и включите tray в панели. Доступны waylookup capture/settings/quit.",
+            )
 
     def notify(self, title, body):
         notification = Gio.Notification.new(title)
@@ -483,6 +531,10 @@ class Application(Gtk.Application):
         return False
 
     def apply_config(self, config):
+        if self.desktop != "hyprland":
+            config.save()
+            self.config = config
+            return
         old = self.config
         try:
             if config.register_hotkey:
@@ -513,9 +565,10 @@ class Application(Gtk.Application):
 
         def run_capture():
             try:
-                monitor = focused_monitor()
-                png = capture_output(monitor["name"])
+                png, monitor = capture_screen(self.desktop, self.stop)
                 GLib.idle_add(self.show_capture, generation, png, monitor)
+            except CaptureCancelled:
+                GLib.idle_add(self.capture_failed, generation, None)
             except Exception as error:
                 GLib.idle_add(self.capture_failed, generation, str(error))
 
@@ -525,6 +578,8 @@ class Application(Gtk.Application):
         if generation != self.generation or self.stop.is_set():
             return False
         self.capturing = False
+        if self.settings:
+            return False
         try:
             self.overlay = Overlay(self, png, monitor)
         except Exception as error:
@@ -545,7 +600,8 @@ class Application(Gtk.Application):
     def capture_failed(self, generation, error):
         if generation == self.generation:
             self.capturing = False
-            self.notify("Не удалось захватить экран", error)
+            if error:
+                self.notify("Не удалось захватить экран", error)
         return False
 
     def ocr_finished(self, generation, words, error):

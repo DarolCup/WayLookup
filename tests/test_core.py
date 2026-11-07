@@ -2,6 +2,7 @@ import gzip
 import json
 from pathlib import Path
 import struct
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -11,11 +12,17 @@ from waylookup.config import Config, parse_hotkey
 from waylookup.dictionary import Dictionary, Sense
 from waylookup.history import save_lookup
 from waylookup.hyprland import Hotkey
-from waylookup.ocr import Word, parse_tsv, sentence_for
+from waylookup.ocr import Word, parse_tsv, recognize, sentence_for
 from waylookup.translation import LookupResult, TranslationError, Translator, request_json
 
 
 class OCRTests(unittest.TestCase):
+    @patch("waylookup.ocr.subprocess.run")
+    def test_recognize_requests_tsv_without_a_config_file(self, run):
+        run.return_value = subprocess.CompletedProcess([], 0, stdout=b"level\ttext\n")
+        self.assertEqual(recognize(b"image", Config()), [])
+        self.assertEqual(run.call_args.args[0][-2:], ["-c", "tessedit_create_tsv=1"])
+
     def test_tsv_keeps_quotes_and_excludes_noise(self):
         header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
         rows = [

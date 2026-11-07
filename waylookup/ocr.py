@@ -74,7 +74,9 @@ def recognize(png: bytes, config: Config) -> list[Word]:
             config.ocr_languages,
             "--psm",
             str(config.ocr_psm),
-            "tsv",
+            # Use the setting directly so installations without the tsv config file work.
+            "-c",
+            "tessedit_create_tsv=1",
         ],
         input=png,
         capture_output=True,

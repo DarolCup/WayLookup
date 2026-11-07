@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "waylookup"
 version = "0.1.1"
-description = "Click-to-translate screenshot overlay for Hyprland"
+description = "Click-to-translate screenshot overlay for Hyprland, KDE Plasma and GNOME on Wayland"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

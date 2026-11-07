@@ -12,20 +12,29 @@ import sys
 
 from . import __version__
 from .config import Config, config_path
+from .desktop import current_desktop
 
 
 def doctor() -> int:
     failures = 0
-    checks = []
-    for program in ("hyprctl", "grim", "tesseract"):
-        checks.append(
-            (bool(shutil.which(program)), program, shutil.which(program) or "не установлен")
-        )
-    for namespace, version in (
-        ("Gtk", "3.0"),
-        ("GtkLayerShell", "0.1"),
-        ("AyatanaAppIndicator3", "0.1"),
-    ):
+    desktop = current_desktop()
+    display = os.environ.get("WAYLAND_DISPLAY")
+    checks = [
+        (bool(display), "Wayland", display or "нет сессии"),
+        (desktop is not None, "Рабочий стол", desktop or "нужен Hyprland, KDE Plasma или GNOME"),
+    ]
+    programs = ["tesseract"]
+    namespaces = [("Gtk", "3.0")]
+    if desktop == "hyprland":
+        programs.extend(("hyprctl", "grim"))
+        namespaces.extend((("GtkLayerShell", "0.1"), ("AyatanaAppIndicator3", "0.1")))
+    elif desktop == "plasma":
+        programs.extend(("spectacle", "kscreen-doctor"))
+
+    for program in programs:
+        path = shutil.which(program)
+        checks.append((bool(path), program, path or "не установлен"))
+    for namespace, version in namespaces:
         try:
             import gi
 
@@ -34,20 +43,29 @@ def doctor() -> int:
             checks.append((True, namespace, version))
         except (ImportError, ValueError) as error:
             checks.append((False, namespace, str(error)))
-    checks.append(
-        (
-            bool(os.environ.get("WAYLAND_DISPLAY")),
-            "Wayland",
-            os.environ.get("WAYLAND_DISPLAY", "нет сессии"),
-        )
-    )
-    checks.append(
-        (
-            bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")),
-            "Hyprland",
-            "сессия" if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") else "нет сессии",
-        )
-    )
+    try:
+        import cairo  # noqa: F401
+
+        checks.append((True, "PyCairo", "доступен"))
+    except ImportError as error:
+        checks.append((False, "PyCairo", str(error)))
+    if desktop == "gnome":
+        try:
+            from .screencast import check_gstreamer, check_portal
+
+            check_gstreamer()
+            check_portal()
+            checks.append((True, "ScreenCast", "GStreamer и захват монитора доступны"))
+        except Exception as error:
+            checks.append((False, "ScreenCast", str(error)))
+    elif desktop == "plasma":
+        try:
+            from .plasma import active_output
+
+            name = active_output()
+            checks.append((bool(name), "KWin", name or "нет активного монитора"))
+        except Exception as error:
+            checks.append((False, "KWin", str(error)))
     try:
         config = Config.load()
         if shutil.which("tesseract"):
@@ -67,7 +85,7 @@ def doctor() -> int:
             )
         checks.append((True, "Конфигурация", str(config_path())))
         checks.append((True, "Файл слов", str(config.vocabulary_path)))
-    except (ValueError, OSError) as error:
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
         checks.append((False, "Конфигурация", str(error)))
     for success, name, detail in checks:
         print(f"{'OK' if success else 'FAIL'}  {name}: {detail}")
@@ -76,11 +94,11 @@ def doctor() -> int:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="WayLookup — перевод слов на экране под Hyprland")
+    parser = argparse.ArgumentParser(description="WayLookup — перевод слов на экране в Wayland")
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command")
     for command, help_text in (
-        ("daemon", "Запустить демон с tray"),
+        ("daemon", "Запустить фоновый процесс"),
         ("capture", "Открыть/закрыть перевод экрана"),
         ("settings", "Открыть настройки"),
         ("quit", "Завершить демон"),
@@ -133,12 +151,12 @@ def main(argv=None) -> int:
                 print(f"Импортировано {count} слов")
             return 0
         os.environ.setdefault("GDK_BACKEND", "wayland")
-        if not os.environ.get("WAYLAND_DISPLAY"):
-            parser.error("Нужна Wayland-сессия Hyprland. Проверьте waylookup doctor")
-        from .ui import Application, GtkLayerShell
+        if current_desktop() is None:
+            parser.error(
+                "Нужна Wayland-сессия Hyprland, KDE Plasma или GNOME. Проверьте waylookup doctor"
+            )
+        from .ui import Application
 
-        if not GtkLayerShell.is_supported():
-            parser.error("Композитор не поддерживает layer-shell")
         app = Application()
         return app.run(["waylookup", args.command or "daemon"])
     except (OSError, ValueError, RuntimeError, ImportError) as error:
