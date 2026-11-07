@@ -1,6 +1,7 @@
 """User-owned JSON / StarDict dictionaries, imported transactionally to SQLite."""
 
 from contextlib import contextmanager
+from collections.abc import Callable
 from dataclasses import dataclass
 import gzip
 from html.parser import HTMLParser
@@ -21,6 +22,27 @@ class Sense:
 
 def normalize(word: str) -> str:
     return unicodedata.normalize("NFKC", word).casefold().replace("’", "'").strip()
+
+
+def english_base_forms(word: str) -> list[str]:
+    word = normalize(word)
+    if not word.isascii() or not word.replace("'", "").isalpha() or len(word) < 4:
+        return []
+    if word.endswith("'s"):
+        return [word[:-2]]
+    if word.endswith(("ies", "ied")):
+        return [word[:-3] + "y", word[:-1]]
+    if word.endswith(("ing", "ed")):
+        stem = word[:-3] if word.endswith("ing") else word[:-2]
+        forms = [stem, stem + "e"]
+        if len(stem) >= 3 and stem[-1] == stem[-2] and stem[-1] in "bdgmnprt":
+            forms.insert(0, stem[:-1])
+        return [form for form in forms if len(form) >= 3]
+    if word.endswith(("shes", "ches", "sses", "xes", "zzes", "oes")):
+        return [word[:-2], word[:-1]]
+    if word.endswith("s") and not word.endswith(("ss", "us", "is")):
+        return [word[:-1]]
+    return []
 
 
 class PlainText(HTMLParser):
@@ -72,6 +94,13 @@ class Dictionary:
                 )
             ]
 
+    def has_book(self, book: str, source: str, target: str) -> bool:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT 1 FROM entries WHERE source=? AND target=? AND book=? LIMIT 1",
+                (source, target, book),
+            ).fetchone() is not None
+
     def books(self) -> list[tuple]:
         with self.connect() as db:
             return db.execute(
@@ -106,7 +135,10 @@ class Dictionary:
                 count += 1
         return count
 
-    def import_stardict(self, path: Path, source: str, target: str, name: str | None = None) -> int:
+    def import_stardict(
+        self, path: Path, source: str, target: str, name: str | None = None,
+        *, definitions_for: Callable[[bytes, str], list[str]] | None = None,
+    ) -> int:
         if path.suffix != ".ifo":
             raise ValueError("Укажите файл .ifo словаря StarDict")
         metadata = dict(
@@ -168,13 +200,16 @@ class Dictionary:
                 payload = definitions.read(length)
                 if len(payload) != length:
                     raise ValueError("Повреждены статьи StarDict")
-                meaning = decode_definition(payload, sequence)
-                headwords.append(normalize(headword.decode("utf-8")))
-                if meaning:
-                    db.execute(
-                        "INSERT OR IGNORE INTO entries VALUES (?,?,?,?,?)",
-                        (source, target, book, normalize(headword.decode("utf-8")), meaning),
-                    )
+                meanings = (
+                    definitions_for(payload, sequence) if definitions_for
+                    else [decode_definition(payload, sequence)]
+                )
+                word = normalize(headword.decode("utf-8"))
+                headwords.append(word)
+                db.executemany(
+                    "INSERT OR IGNORE INTO entries VALUES (?,?,?,?,?)",
+                    ((source, target, book, word, meaning) for meaning in meanings if meaning),
+                )
                 count += 1
             if metadata.get("wordcount") and count != int(metadata["wordcount"]):
                 raise ValueError("Число статей не совпадает с wordcount в .ifo")

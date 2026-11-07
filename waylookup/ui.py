@@ -71,9 +71,9 @@ def find_monitor(display, position):
 
 
 class Overlay(Gtk.ApplicationWindow):
-    def __init__(self, app, png: bytes, monitor: dict | None):
+    def __init__(self, app, png: bytes, monitor: dict | None, words):
         display = Gdk.Display.get_default()
-        if app.layer_shell:
+        if app.desktop == "hyprland":
             gdk_monitor = display.get_monitor_at_point(monitor["x"] + 1, monitor["y"] + 1)
         else:
             index, gdk_monitor = find_monitor(display, monitor)
@@ -107,7 +107,7 @@ class Overlay(Gtk.ApplicationWindow):
         overlay.add(self.canvas)
 
         self.card = TranslationCard(
-            app.config, gdk_monitor.get_geometry(), self.destroy, app.lookup
+            app.config, gdk_monitor.get_geometry(), self.destroy, app.lookup, app.save_result
         )
         self.card.set_no_show_all(True)
         overlay.add_overlay(self.card)
@@ -117,12 +117,13 @@ class Overlay(Gtk.ApplicationWindow):
         bar.set_halign(Gtk.Align.CENTER)
         bar.set_valign(Gtk.Align.END)
         bar.set_margin_bottom(30)
-        self.status = label("Распознавание текста…", "status")
+        self.status = label("", "status")
         bar.pack_start(self.status, True, True, 0)
         exit_button = Gtk.Button(label="Esc · Закрыть")
         exit_button.connect("clicked", lambda *_: self.destroy())
         bar.pack_start(exit_button, False, False, 0)
         overlay.add_overlay(bar)
+        self.set_words(words)
         self.show_all()
         if not app.layer_shell:
             self.present()
@@ -155,8 +156,6 @@ class Overlay(Gtk.ApplicationWindow):
         cr.translate(ox, oy)
         cr.scale(self.scale, self.scale)
         Gdk.cairo_set_source_pixbuf(cr, self.pixbuf, 0, 0)
-        cr.paint()
-        cr.set_source_rgba(0.02, 0.04, 0.08, 0.12)
         cr.paint()
         for word in self.words:
             selected = word is self.selected
@@ -212,7 +211,7 @@ class Settings(Gtk.ApplicationWindow):
         super().__init__(application=app, title="WayLookup — Настройки")
         self.app = app
         self.get_style_context().add_class("settings-window")
-        if app.layer_shell:
+        if app.desktop == "hyprland":
             layer_window(app.layer_shell, self, "waylookup-settings")
         self.set_default_size(650, 720)
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16, margin=24)
@@ -237,6 +236,12 @@ class Settings(Gtk.ApplicationWindow):
                 ("hotkey", "Бинд", None),
                 ("register_hotkey", "Регистрировать бинд", "bool"),
             ])
+        providers = [
+            ("mymemory", "MyMemory · онлайн, без ключа"),
+            ("google", "Google Cloud · ключ API"),
+            ("libretranslate", "LibreTranslate"),
+            ("ollama", "Ollama · ИИ"),
+        ]
         specs += [
             ("source", "Исходный язык", None),
             ("target", "Язык перевода", None),
@@ -261,16 +266,16 @@ class Settings(Gtk.ApplicationWindow):
                     ("ai", "ИИ · Ollama"),
                 ],
             ),
+            (
+                "word_provider",
+                "Источник машинного перевода слова",
+                [("same", "Как для предложения"), *providers],
+            ),
             ("dictionary_fallback", "Переводчик, если нет в словаре", "bool"),
             (
                 "sentence_provider",
                 "Переводчик предложения",
-                [
-                    ("mymemory", "MyMemory · онлайн, без ключа"),
-                    ("libretranslate", "LibreTranslate"),
-                    ("ollama", "Ollama · ИИ"),
-                    ("off", "Отключить"),
-                ],
+                [*providers, ("off", "Отключить")],
             ),
             ("libretranslate_url", "Адрес LibreTranslate", None),
             ("ollama_url", "Адрес Ollama", None),
@@ -333,7 +338,7 @@ class Settings(Gtk.ApplicationWindow):
             lambda _w, event: (self.destroy() or True) if event.keyval == Gdk.KEY_Escape else False,
         )
         self.show_all()
-        if not app.layer_shell:
+        if app.desktop != "hyprland":
             self.present()
 
     def save(self, *_):
@@ -372,7 +377,7 @@ class Settings(Gtk.ApplicationWindow):
         chooser.add_filter(file_filter)
         chooser.connect("response", self.import_selected)
         self.chooser = chooser
-        if self.app.layer_shell:
+        if self.app.desktop == "hyprland":
             # Native/portal dialogs are regular surfaces; hide our covering layer while choosing.
             self.hide()
             self.app.layer_shell.set_keyboard_mode(self, self.app.layer_shell.KeyboardMode.NONE)
@@ -382,7 +387,7 @@ class Settings(Gtk.ApplicationWindow):
 
     def import_selected(self, chooser, response):
         self.chooser = None
-        if self.app.layer_shell:
+        if self.app.desktop == "hyprland":
             self.show_all()
             self.app.layer_shell.set_keyboard_mode(
                 self, self.app.layer_shell.KeyboardMode.EXCLUSIVE
@@ -420,13 +425,18 @@ class Application(Gtk.Application):
     def __init__(self):
         self.desktop = current_desktop()
         self.layer_shell = None
-        if self.desktop == "hyprland":
-            gi.require_version("GtkLayerShell", "0.1")
-            from gi.repository import GtkLayerShell
-
-            if not GtkLayerShell.is_supported():
+        if self.desktop in ("hyprland", "plasma"):
+            try:
+                gi.require_version("GtkLayerShell", "0.1")
+                from gi.repository import GtkLayerShell
+            except (ImportError, ValueError):
+                if self.desktop == "hyprland":
+                    raise
+            else:
+                if GtkLayerShell.is_supported():
+                    self.layer_shell = GtkLayerShell
+            if self.desktop == "hyprland" and not self.layer_shell:
                 raise RuntimeError("Композитор не поддерживает layer-shell")
-            self.layer_shell = GtkLayerShell
         super().__init__(
             application_id=APP_ID,
             flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE,
@@ -444,6 +454,7 @@ class Application(Gtk.Application):
         self.executor = ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="waylookup-translation"
         )
+        self.save_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="waylookup-save")
         self.capture_executor = ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="waylookup-capture"
         )
@@ -593,10 +604,14 @@ class Application(Gtk.Application):
         if self.stop.is_set():
             return False
 
+        config = self.config
+
         def run_capture():
             try:
                 png, monitor = capture_screen(self.desktop, self.stop, choose_monitor)
-                GLib.idle_add(self.show_capture, generation, png, monitor)
+                if not self.stop.is_set():
+                    words = recognize(png, config)
+                    GLib.idle_add(self.show_capture, generation, png, monitor, words)
             except CaptureCancelled:
                 GLib.idle_add(self.capture_failed, generation, None)
             except Exception as error:
@@ -605,28 +620,18 @@ class Application(Gtk.Application):
         self.capture_executor.submit(run_capture)
         return False
 
-    def show_capture(self, generation, png, monitor):
+    def show_capture(self, generation, png, monitor, words):
         if generation != self.generation or self.stop.is_set():
             return False
         self.capturing = False
         if self.settings and self.settings is not self.hidden_settings:
             return False
         try:
-            self.overlay = Overlay(self, png, monitor)
+            self.overlay = Overlay(self, png, monitor, words)
         except Exception as error:
             self.notify("Ошибка оверлея", str(error))
             self.restore_settings()
             return False
-        config = self.config
-
-        def run_ocr():
-            try:
-                words = recognize(png, config)
-                GLib.idle_add(self.ocr_finished, generation, words, None)
-            except Exception as error:
-                GLib.idle_add(self.ocr_finished, generation, [], str(error))
-
-        self.capture_executor.submit(run_ocr)
         return False
 
     def capture_failed(self, generation, error):
@@ -635,14 +640,6 @@ class Application(Gtk.Application):
             if error:
                 self.notify("Не удалось захватить экран", error)
             self.restore_settings()
-        return False
-
-    def ocr_finished(self, generation, words, error):
-        if generation == self.generation and self.overlay:
-            if error:
-                self.overlay.status.set_text(error)
-            else:
-                self.overlay.set_words(words)
         return False
 
     def lookup(self, word, sentence):
@@ -673,16 +670,26 @@ class Application(Gtk.Application):
                     )
             except Exception as error:
                 result.errors.append("Предложение: " + str(error))
-            try:
-                result.saved = save_lookup(
-                    config.vocabulary_path, result, config.source, config.target
-                )
-            except OSError:
-                result.errors.append("Не удалось сохранить слово: проверьте путь и права на файл")
             result.complete = True
             GLib.idle_add(self.lookup_finished, generation, lookup_id, result)
 
         self.future = self.executor.submit(run_lookup)
+
+    def save_result(self, result):
+        if not result or not result.complete or result.saved or result.saving or not self.overlay:
+            return
+        generation, lookup_id, config = self.generation, self.lookup_id, self.config
+        self.overlay.show_result(replace(result, saving=True, save_error=""))
+
+        def run_save():
+            try:
+                saved = save_lookup(config.vocabulary_path, result, config.source, config.target)
+                updated = replace(result, saved=saved)
+            except OSError:
+                updated = replace(result, save_error="Не удалось записать файл слов")
+            GLib.idle_add(self.lookup_finished, generation, lookup_id, updated)
+
+        self.save_executor.submit(run_save)
 
     def lookup_finished(self, generation, lookup_id, result):
         if generation == self.generation and lookup_id == self.lookup_id and self.overlay:
@@ -742,5 +749,6 @@ class Application(Gtk.Application):
         except Exception as error:
             LOG.warning("Не удалось удалить временный бинд: %s", error)
         self.executor.shutdown(wait=False, cancel_futures=True)
+        self.save_executor.shutdown(wait=False)
         self.capture_executor.shutdown(wait=False, cancel_futures=True)
         Gtk.Application.do_shutdown(self)

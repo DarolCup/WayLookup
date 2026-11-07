@@ -145,7 +145,7 @@ class PortalCapture:
 def read_frame(fd, node, serial, stop):
     pipeline = Gst.parse_launch(
         "pipewiresrc name=source ! videoconvert ! video/x-raw,format=RGB ! "
-        "pngenc ! appsink name=frame sync=false max-buffers=1"
+        "pngenc compression-level=1 ! appsink name=frame sync=false max-buffers=1"
     )
     source = pipeline.get_by_name("source")
     source.set_property("fd", fd)

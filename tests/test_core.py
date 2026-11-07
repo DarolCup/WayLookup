@@ -10,9 +10,10 @@ from unittest.mock import patch
 
 from waylookup.config import Config, parse_hotkey
 from waylookup.dictionary import Dictionary, Sense
+from waylookup.default_dictionaries import wikdict_definitions
 from waylookup.history import save_lookup
 from waylookup.hyprland import Hotkey
-from waylookup.ocr import Word, parse_tsv, recognize, sentence_for
+from waylookup.ocr import STRIP_OVERLAP, Word, parse_tsv, recognize, sentence_for
 from waylookup.translation import LookupResult, TranslationError, Translator, request_json
 
 
@@ -46,6 +47,30 @@ class OCRTests(unittest.TestCase):
         self.assertEqual(sentence_for(words, words[5]), "Dr. Stone found a rare sword!")
         self.assertEqual(sentence_for(words, words[0]), "Hello.")
         self.assertEqual(sentence_for(words, words[8]), "Leave now.")
+
+    def test_sentence_rejoins_wrap_without_joining_other_columns(self):
+        first = Word("Cross", 30, 100, 50, 16, 95, (1, 1), 1, 1)
+        selected = Word("the", 87, 100, 26, 16, 95, (1, 1), 1, 1)
+        wrapped = Word("river.", 30, 122, 69, 16, 95, (2, 1), 1, 1)
+        unrelated = Word("Settings", 270, 120, 80, 16, 95, (1, 2), 1, 1)
+        self.assertEqual(sentence_for([first, selected, unrelated, wrapped], selected), "Cross the river.")
+        self.assertEqual(sentence_for([first, selected, unrelated, wrapped], wrapped), "Cross the river.")
+
+    @patch("waylookup.ocr.split_image", return_value=(b"top", b"bottom", 200))
+    @patch("waylookup.ocr.recognize_image")
+    def test_parallel_ocr_keeps_one_copy_and_restores_monitor_coordinates(self, ocr, _split):
+        def recognize_strip(image, _config, _single_thread):
+            if image == b"top":
+                return [
+                    Word("top", 50, 120, 30, 10, 95, (1, 1), 1, 1),
+                    Word("bottom", 50, 210, 30, 10, 95, (1, 1), 1, 2),
+                ]
+            return [Word("bottom", 50, STRIP_OVERLAP + 10, 30, 10, 95, (1, 1), 1, 1)]
+
+        ocr.side_effect = recognize_strip
+        words = recognize(b"image", Config())
+        self.assertEqual([(word.text, word.y) for word in words], [("top", 120), ("bottom", 210)])
+        self.assertNotEqual(words[0].block, words[1].block)
 
 
 class ConfigTests(unittest.TestCase):
@@ -136,9 +161,18 @@ class HistoryTests(unittest.TestCase):
             for worker in workers:
                 worker.join()
             content = path.read_text()
-            self.assertEqual(content.count("Слово:"), 1)
-            self.assertIn("Возьми меч.", content)
+            self.assertEqual(content.count("\n\nsword\n\n"), 1)
+            self.assertIn("Значения\n  Test\n    1. меч\n\nОригинал\nTake the sword.", content)
+            self.assertIn("\n\nПеревод предложения\nВозьми меч.\n", content)
+            self.assertNotIn("[id:", content)
             self.assertFalse(save_lookup(path, LookupResult("bad", "bad"), "en", "ru"))
+
+    def test_can_save_sentence_without_dictionary_result(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "words.txt"
+            result = LookupResult("hello", "Hello there.", translated_sentence="Привет.")
+            self.assertTrue(save_lookup(path, result, "en", "ru"))
+            self.assertIn("Перевод предложения\nПривет.", path.read_text())
 
 
 class TranslationTests(unittest.TestCase):
@@ -178,6 +212,40 @@ class TranslationTests(unittest.TestCase):
         request.return_value = {"message": {"content": "not JSON"}}
         with self.assertRaises(TranslationError):
             self.translator.ai_word("x", "x", Config())
+
+    @patch("waylookup.translation.request_json")
+    def test_explicit_google_word_provider_and_missing_ollama_do_not_fall_back(self, request):
+        google = Config(word_mode="translator", word_provider="google", sentence_provider="off")
+        request.return_value = {"data": {"translations": [{"translatedText": "меч"}]}}
+        with patch.dict("os.environ", {"WAYLOOKUP_GOOGLE_API_KEY": "test-key"}):
+            self.assertEqual(self.translator.word("sword", "Take the sword.", google)[0].text, "меч")
+        self.assertEqual(request.call_args.args[1]["format"], "text")
+        self.assertIn("translation.googleapis.com", request.call_args.args[0])
+        ollama = Config(sentence_provider="ollama")
+        request.return_value = {"message": {"content": '{"translation": "меч"}'}}
+        self.translator.translate("sword", ollama)
+        request.reset_mock()
+        request.side_effect = TranslationError("Сервис недоступен")
+        with self.assertRaisesRegex(TranslationError, "Ollama"):
+            self.translator.translate("sword", ollama)
+        self.assertEqual(request.call_count, 1)
+        self.assertTrue(request.call_args.args[0].endswith("/api/chat"))
+
+    def test_dictionary_forms_and_context_use_local_senses(self):
+        payload = (
+            '<div>/<font color="gray">bæŋk</font>/<br><div><font class="grammar">noun</font></div>'
+            '<ol><li>A financial institution.<div>банк</div></li>'
+            '<li>An edge of a river.<ol><li><div>берег</div></li><li><div>брег</div></li></ol>'
+            '</li></ol></div>'
+        ).encode()
+        entries = wikdict_definitions(payload, "h")
+        self.assertEqual(entries, ["банк\n\nA financial institution", "берег, брег\n\nAn edge of a river"])
+        path = Path(self.temporary.name) / "dictionary.json"
+        path.write_text(json.dumps({"bank": entries}), encoding="utf-8")
+        self.translator.dictionary.import_json(path, "en", "ru", "FreeDict + WikDict (en → ru)")
+        result = self.translator.word("banks", "Flooding covered both banks of the river.", Config())
+        self.assertTrue(result[0].text.startswith("берег, брег\n"))
+        self.assertTrue(result[0].source.endswith(" · bank"))
 
     @patch("waylookup.translation.request_json")
     def test_offline_does_not_send_requests(self, request):

@@ -5,6 +5,7 @@ After=graphical-session-pre.target
 ConditionEnvironment=WAYLAND_DISPLAY
 
 [Service]
+EnvironmentFile=-%E/waylookup/providers.env
 Type=dbus
 BusName=io.github.waylookup.WayLookup
 ExecStart=%h/.local/bin/waylookup daemon

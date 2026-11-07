@@ -4,6 +4,7 @@ PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
+EnvironmentFile=-%E/waylookup/providers.env
 Type=simple
 ExecStart=/usr/bin/waylookup daemon
 Restart=on-failure

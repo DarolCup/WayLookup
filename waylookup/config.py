@@ -40,8 +40,9 @@ class Config:
     ocr_psm: int = 3
     min_confidence: float = 35.0
     word_mode: str = "dictionary"
+    word_provider: str = "same"
     sentence_provider: str = "mymemory"
-    dictionary_fallback: bool = True
+    dictionary_fallback: bool = False
     libretranslate_url: str = "http://127.0.0.1:5000"
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
@@ -77,8 +78,11 @@ class Config:
             raise ValueError("PSM: 3, 6, 11, 12; уверенность OCR: 0–100")
         if self.word_mode not in ("dictionary", "translator", "ai"):
             raise ValueError("Неизвестный режим слова")
-        if self.sentence_provider not in ("mymemory", "libretranslate", "ollama", "off"):
+        providers = ("mymemory", "google", "libretranslate", "ollama")
+        if self.sentence_provider not in (*providers, "off"):
             raise ValueError("Неизвестный переводчик предложения")
+        if self.word_provider not in (*providers, "same"):
+            raise ValueError("Неизвестный переводчик слова")
         if not 1 <= self.network_timeout <= 180:
             raise ValueError("Таймаут: от 1 до 180 секунд")
         for url in (self.libretranslate_url, self.ollama_url):

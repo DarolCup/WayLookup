@@ -83,13 +83,14 @@ The system Python can use Arch's PyGObject packages directly. If using a virtual
 
 ## Translation and dictionaries
 
-- Local Tesseract OCR: screenshots are never sent to a translation service.
+- The overlay opens with OCR highlights already in place. Dense frames with a suitable horizontal gap can run OCR in two parallel strips. Screenshots stay local.
 - StarDict (`.ifo`, `.idx`/`.idx.gz`, `.dict`/`.dict.dz`, optional `.syn`) and JSON dictionaries, indexed locally in SQLite.
-- MyMemory is enabled by default and sends the selected word and sentence over the internet. Service quotas and a 500-byte request limit apply.
+- MyMemory is the default sentence provider and has a 500-byte request limit. Word and sentence providers can be selected independently.
+- Google Cloud Translation uses `WAYLOOKUP_GOOGLE_API_KEY`. For the user service, put the variable in `~/.config/waylookup/providers.env` and restart `waylookup.service`. [Google Cloud Translation API](https://docs.cloud.google.com/translate/docs/reference/rest/v2/translate)
 - LibreTranslate supports a self-hosted server; its optional key is read from `WAYLOOKUP_LIBRETRANSLATE_KEY`.
 - Ollama supports local AI translation and contextual word meanings. Install and start Ollama, download your own model, and select its exact name in settings.
 
-Dictionary data is not bundled. Download a suitable StarDict language pair from [FreeDict](https://freedict.org/downloads/), unpack it and import its `.ifo`:
+The Fedora installer imports English–Russian, Russian–English and German–Russian FreeDict + WikDict dictionaries. For a manual installation, run `waylookup dictionary install-defaults`. For another pair, download a StarDict archive, unpack it and import its `.ifo`. [FreeDict downloads](https://freedict.org/downloads/)
 
 ```bash
 python -m waylookup dictionary import /path/to/dictionary.ifo --source en --target ru
@@ -102,7 +103,7 @@ For a small demo with eleven words:
 python -m waylookup dictionary import examples/en-ru.json --source en --target ru --name Demo
 ```
 
-Installed packages provide that demo under `/usr/share/waylookup/examples/en-ru.json`. Dictionary licenses are independent of the application license. Exact word forms and StarDict synonyms are supported; general lemmatisation is not yet implemented.
+The Arch package provides that demo under `/usr/share/waylookup/examples/en-ru.json`. Offline lookup prefers exact matches and checks common English inflections when needed. FreeDict meanings are reordered when their glosses share words with the selected sentence.
 
 For fully offline use, select a local dictionary and disable sentence translation and dictionary fallback, or configure a local Ollama server.
 
@@ -114,7 +115,7 @@ waylookup capture
 waylookup quit
 ```
 
-For a checkout, prefix commands with `python -m` while inside the project directory. Configuration is stored in `~/.config/waylookup/config.json`. Vocabulary goes to `~/.local/share/waylookup/words.txt`: word meanings, sources, context and sentence translation. The vocabulary path is configurable. Repeated identical contexts are deduplicated. XDG directory overrides are supported.
+For a checkout, prefix commands with `python -m` while inside the project directory. Configuration is stored in `~/.config/waylookup/config.json`. Click **Save** in the translation card to add a vocabulary entry to `~/.local/share/waylookup/words.txt`. Entries have separate sections for meanings, the original sentence and its translation. The vocabulary path is configurable. XDG directory overrides are supported.
 
 The GUI applies changes immediately. Restart after editing JSON manually. On Hyprland, the WayLookup settings accept shortcuts such as `ALT+Q`, `SUPER+SHIFT+T` and `CTRL+F8`, and report existing shortcut conflicts. On Fedora, the desktop controls the shortcut.
 

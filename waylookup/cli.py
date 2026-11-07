@@ -117,6 +117,7 @@ def main(argv=None) -> int:
     )
     dictionary_commands = dictionary_parser.add_subparsers(dest="dictionary_command", required=True)
     dictionary_commands.add_parser("list")
+    dictionary_commands.add_parser("install-defaults", help="Загрузить офлайн-словари FreeDict")
     importer = dictionary_commands.add_parser("import")
     importer.add_argument("file", type=Path, help=".ifo StarDict или .json")
     importer.add_argument("--source", default="en")
@@ -151,6 +152,10 @@ def main(argv=None) -> int:
             from .dictionary import Dictionary
 
             dictionary = Dictionary()
+            if args.dictionary_command == "install-defaults":
+                from .default_dictionaries import install_defaults
+
+                return install_defaults(dictionary)
             if args.dictionary_command == "list":
                 for book, source, target, count in dictionary.books():
                     print(f"{book}\t{source} → {target}\t{count} слов")

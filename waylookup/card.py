@@ -7,6 +7,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
+from .history import format_lookup  # noqa: E402
 from .presentation import clean_text, meaning_groups  # noqa: E402
 from .translation import LookupResult  # noqa: E402
 
@@ -42,7 +43,7 @@ def badge(text, css="source-badge"):
 
 
 class TranslationCard(Gtk.Box):
-    def __init__(self, config, geometry, close, retry):
+    def __init__(self, config, geometry, close, retry, save):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.config = config
         self.retry_callback = retry
@@ -128,6 +129,10 @@ class TranslationCard(Gtk.Box):
         self.copy_button.set_tooltip_text("Слово, все значения и предложение")
         self.copy_button.connect("clicked", self.copy_result)
         footer.pack_start(self.copy_button, False, False, 0)
+        self.save_button = Gtk.Button(label="Сохранить")
+        self.save_button.get_style_context().add_class("suggested-action")
+        self.save_button.connect("clicked", lambda *_: save(self.last_result))
+        footer.pack_start(self.save_button, False, False, 0)
         self.show_all()
 
     def loading(self, word, sentence):
@@ -187,7 +192,7 @@ class TranslationCard(Gtk.Box):
     def render(self, result):
         self.last_result = result
         self.render_meanings(result.senses)
-        has_meanings = bool(meaning_groups(result.senses))
+        has_meanings = bool(self.meanings_box.get_children())
         self.word_state.set_visible(not has_meanings)
         if not result.word_complete and not result.complete:
             self.word_state.set_text("Ищем перевод слова…")
@@ -216,18 +221,23 @@ class TranslationCard(Gtk.Box):
         self.spinner.start() if busy else self.spinner.stop()
         self.retry_button.set_visible(bool(result.complete and result.errors))
         self.copy_button.set_sensitive(bool(result.senses or sentence))
+        self.save_button.set_sensitive(
+            bool((has_meanings or sentence) and result.complete and not result.saved and not result.saving)
+        )
         if result.saved:
             self.saved_label.set_text("✓ Сохранено в " + self.config.vocabulary_path.name)
+        elif result.saving:
+            self.saved_label.set_text("Сохраняем…")
+        elif result.save_error:
+            self.saved_label.set_text(result.save_error)
         elif busy:
             self.saved_label.set_text(
                 "Получаем перевод…"
                 if not has_meanings
                 else "Перевод слова готов · ждём предложение"
             )
-        elif has_meanings:
-            self.saved_label.set_text("Не удалось сохранить слово")
         else:
-            self.saved_label.set_text("Нет перевода для сохранения")
+            self.saved_label.set_text("")
 
     def retry(self, *_):
         if self.last_result:
@@ -237,14 +247,4 @@ class TranslationCard(Gtk.Box):
         result = self.last_result
         if not result:
             return
-        lines = [clean_text(result.word), "", "Значения:"]
-        for group in meaning_groups(result.senses):
-            lines.append(group.source)
-            lines.extend(
-                f"{i}. {meaning.article or meaning.summary}"
-                for i, meaning in enumerate(group.meanings, 1)
-            )
-        lines.extend(["", "Оригинал:", clean_text(result.sentence, strip_markup=False)])
-        if result.translated_sentence:
-            lines.extend(["", "Перевод:", clean_text(result.translated_sentence)])
-        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text("\n".join(lines), -1)
+        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(format_lookup(result), -1)

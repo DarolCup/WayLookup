@@ -32,6 +32,7 @@ import cairo  # noqa: E402
 from waylookup.config import Config  # noqa: E402
 from waylookup.dictionary import Dictionary, Sense  # noqa: E402
 from waylookup.hyprland import capture_output, focused_monitor  # noqa: E402
+from waylookup.ocr import recognize  # noqa: E402
 from waylookup.translation import LookupResult  # noqa: E402
 from waylookup.ui import Application, Gdk, GLib, Gtk  # noqa: E402
 
@@ -114,7 +115,7 @@ class Smoke(Application):
 
     def do_command_line(self, _command_line):
         self.generation += 1
-        self.show_capture(self.generation, png, monitor)
+        self.show_capture(self.generation, png, monitor, recognize(png, self.config))
         GLib.timeout_add(100, self.check)
         return 0
 
@@ -129,12 +130,16 @@ class Smoke(Application):
                 self.stage = 1
             elif self.stage == 1:
                 result = getattr(self.overlay, "last_result", None)
+                if result and result.complete and not result.saving and not result.saved:
+                    assert not result.save_error
+                    assert not self.config.vocabulary_path.exists()
+                    self.overlay.card.save_button.emit("clicked")
                 if result and result.saved:
                     assert len(result.senses) == 3, result
                     assert result.sentence == "Take the sword and follow the river.", result
                     assert result.translated_sentence == "Возьми меч и следуй вдоль реки.", result
                     assert not result.errors, result.errors
-                    assert "Слово: sword" in self.config.vocabulary_path.read_text()
+                    assert "\n\nsword\n\n" in self.config.vocabulary_path.read_text()
                     self.stage = 2
                     GLib.timeout_add(650, self.finish_overlay)
             return True

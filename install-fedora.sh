@@ -125,9 +125,10 @@ if [[ -z $desktop ]]; then
     esac
 fi
 
-packages=(python3 python3-gobject python3-cairo gtk3 tesseract tesseract-langpack-eng)
+packages=(python3 python3-gobject python3-cairo python3-pillow gtk3 tesseract
+          tesseract-langpack-eng tesseract-langpack-rus tesseract-langpack-deu)
 case "$desktop" in
-    plasma) packages+=(spectacle libkscreen libappindicator-gtk3) ;;
+    plasma) packages+=(spectacle libkscreen libappindicator-gtk3 gtk-layer-shell) ;;
     gnome) packages+=(gnome-settings-daemon xdg-desktop-portal xdg-desktop-portal-gnome pipewire-gstreamer
                      gstreamer1-plugins-base gstreamer1-plugins-good) ;;
     *) fail "Choose a desktop with --desktop plasma or --desktop gnome." ;;
@@ -204,6 +205,9 @@ ln -s -- "$release/scripts/waylookup" "$link_dir/waylookup"
 mv -Tf -- "$link_dir/waylookup" "$launcher"
 release=
 "$launcher" config --init >/dev/null
+if ! "$launcher" dictionary install-defaults; then
+    printf 'To retry the offline dictionaries, run "%s" dictionary install-defaults.\n' "$launcher" >&2
+fi
 
 if [[ -n ${WAYLAND_DISPLAY:-} && -n ${XDG_CURRENT_DESKTOP:-} ]]; then
     systemctl --user daemon-reload
