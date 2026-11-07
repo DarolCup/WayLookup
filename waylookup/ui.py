@@ -3,10 +3,12 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import logging
+from math import ceil, floor
 from pathlib import Path
 import signal
 import threading
 
+import cairo
 import gi
 
 gi.require_version("Gtk", "3.0")
@@ -34,6 +36,15 @@ def label(text="", css=None, wrap=True):
     return widget
 
 
+def prepare_transparent_window(window):
+    window.set_decorated(False)
+    window.set_app_paintable(True)
+    visual = window.get_screen().get_rgba_visual()
+    if visual:
+        window.set_visual(visual)
+    return visual is not None
+
+
 def layer_window(shell, window, namespace, monitor=None, fullscreen=False):
     shell.init_for_window(window)
     shell.set_namespace(window, namespace)
@@ -50,11 +61,7 @@ def layer_window(shell, window, namespace, monitor=None, fullscreen=False):
             shell.Edge.RIGHT,
         ):
             shell.set_anchor(window, edge, True)
-    window.set_decorated(False)
-    window.set_app_paintable(True)
-    visual = window.get_screen().get_rgba_visual()
-    if visual:
-        window.set_visual(visual)
+    return prepare_transparent_window(window)
 
 
 def find_monitor(display, position):
@@ -84,15 +91,26 @@ class Overlay(Gtk.ApplicationWindow):
         self.hovered = None
         self.scale = 1.0
         self.offset = (0.0, 0.0)
+        self.input_update = 0
         loader = GdkPixbuf.PixbufLoader.new_with_type("png")
         loader.write(png)
         loader.close()
         self.pixbuf = loader.get_pixbuf()
+        self.windowed_live = app.desktop == "gnome" and display.get_n_monitors() == 1
+        self.monitor_geometry = gdk_monitor.get_geometry()
         if app.layer_shell:
-            layer_window(app.layer_shell, self, "waylookup", gdk_monitor, fullscreen=True)
+            self.supports_transparency = layer_window(
+                app.layer_shell, self, "waylookup", gdk_monitor, fullscreen=True
+            )
         else:
-            self.set_decorated(False)
-            self.fullscreen_on_monitor(self.get_screen(), index)
+            self.monitor_index = index
+            self.supports_transparency = prepare_transparent_window(self) and self.windowed_live
+            if self.supports_transparency:
+                # Mutter paints a black background behind transparent fullscreen surfaces.
+                self.maximize()
+            else:
+                self.fullscreen_on_monitor(self.get_screen(), index)
+        self.live_background = self.supports_transparency
         self.connect("key-press-event", self.on_key)
         self.connect("destroy", lambda *_: self.app.overlay_closed(self))
         overlay = Gtk.Overlay()
@@ -100,10 +118,12 @@ class Overlay(Gtk.ApplicationWindow):
         self.canvas = Gtk.DrawingArea()
         self.canvas.set_hexpand(True)
         self.canvas.set_vexpand(True)
+        self.canvas.set_app_paintable(True)
         self.canvas.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.POINTER_MOTION_MASK)
         self.canvas.connect("draw", self.draw)
         self.canvas.connect("button-press-event", self.click)
         self.canvas.connect("motion-notify-event", self.motion)
+        self.canvas.connect("size-allocate", self.schedule_input_update)
         overlay.add(self.canvas)
 
         self.card = TranslationCard(
@@ -112,7 +132,7 @@ class Overlay(Gtk.ApplicationWindow):
         self.card.set_no_show_all(True)
         overlay.add_overlay(self.card)
 
-        bar = Gtk.Box(spacing=14)
+        self.bar = bar = Gtk.Box(spacing=14)
         bar.get_style_context().add_class("capture-bar")
         bar.set_halign(Gtk.Align.CENTER)
         bar.set_valign(Gtk.Align.END)
@@ -123,6 +143,12 @@ class Overlay(Gtk.ApplicationWindow):
         exit_button.connect("clicked", lambda *_: self.destroy())
         bar.pack_start(exit_button, False, False, 0)
         overlay.add_overlay(bar)
+        bar.show_all()
+        bar.set_no_show_all(True)
+        self.connect("map", self.schedule_input_update)
+        for widget in (self.card, self.bar):
+            for event in ("show", "hide", "size-allocate"):
+                widget.connect(event, self.schedule_input_update)
         self.set_words(words)
         self.show_all()
         if not app.layer_shell:
@@ -136,27 +162,101 @@ class Overlay(Gtk.ApplicationWindow):
             if words
             else "Текст не найден · Попробуйте другой язык OCR или PSM в настройках"
         )
+        self.bar.set_visible(not self.live_background or not words)
+        self.schedule_input_update()
         self.canvas.queue_draw()
 
     def on_key(self, _widget, event):
         if event.keyval == Gdk.KEY_Escape:
             self.destroy()
             return True
+        if event.keyval == Gdk.KEY_F2 and self.supports_transparency:
+            self.live_background = not self.live_background
+            if self.windowed_live:
+                if self.live_background:
+                    self.unfullscreen()
+                    self.maximize()
+                else:
+                    self.fullscreen_on_monitor(self.get_screen(), self.monitor_index)
+            self.bar.set_visible(not self.live_background or not self.words)
+            self.schedule_input_update()
+            self.canvas.queue_draw()
+            return True
         return False
 
-    def draw(self, widget, cr):
-        width, height = widget.get_allocated_width(), widget.get_allocated_height()
+    def update_transform(self):
+        width = self.canvas.get_allocated_width()
+        height = self.canvas.get_allocated_height()
+        top_inset = 0
+        if self.windowed_live and self.live_background:
+            # The standard GNOME top bar is outside the maximized window.
+            top_inset = max(0, self.monitor_geometry.height - height)
+            width = self.monitor_geometry.width
+            height = self.monitor_geometry.height
         self.scale = min(width / self.pixbuf.get_width(), height / self.pixbuf.get_height())
         ox = (width - self.pixbuf.get_width() * self.scale) / 2
-        oy = (height - self.pixbuf.get_height() * self.scale) / 2
+        oy = (height - self.pixbuf.get_height() * self.scale) / 2 - top_inset
         self.offset = (ox, oy)
-        cr.set_source_rgb(0.03, 0.04, 0.06)
-        cr.paint()
+
+    def schedule_input_update(self, *_):
+        if not self.input_update:
+            self.input_update = GLib.idle_add(self.update_input_region)
+
+    def update_input_region(self):
+        self.input_update = 0
+        window = self.get_window()
+        if not window:
+            return False
+        # GDK sends a changed Wayland input region with the next surface commit.
+        self.canvas.queue_draw()
+        # A click through an ordinary GNOME window can raise the game above it.
+        if not self.live_background or self.windowed_live:
+            region = cairo.Region(cairo.RectangleInt(
+                0, 0, self.get_allocated_width(), self.get_allocated_height()
+            ))
+            window.input_shape_combine_region(region, 0, 0)
+            return False
+
+        self.update_transform()
+        region = cairo.Region()
+        position = self.canvas.translate_coordinates(self, 0, 0)
+        if position is not None:
+            x, y = position
+            ox, oy = self.offset
+            for word in self.words:
+                left = floor(x + ox + word.x * self.scale - 3)
+                top = floor(y + oy + word.y * self.scale - 3)
+                right = ceil(x + ox + (word.x + word.width) * self.scale + 3)
+                bottom = ceil(y + oy + (word.y + word.height) * self.scale + 3)
+                region.union(cairo.RectangleInt(left, top, right - left, bottom - top))
+        for widget in (self.card, self.bar):
+            if widget.get_visible():
+                position = widget.translate_coordinates(self, 0, 0)
+                if position is not None:
+                    x, y = position
+                    region.union(cairo.RectangleInt(
+                        x, y, widget.get_allocated_width(), widget.get_allocated_height()
+                    ))
+        window.input_shape_combine_region(region, 0, 0)
+        return False
+
+    def draw(self, _widget, cr):
+        self.update_transform()
+        ox, oy = self.offset
+        if self.live_background:
+            cr.save()
+            cr.set_operator(cairo.OPERATOR_CLEAR)
+            cr.paint()
+            cr.restore()
+        else:
+            cr.set_source_rgb(0.03, 0.04, 0.06)
+            cr.paint()
         cr.save()
         cr.translate(ox, oy)
         cr.scale(self.scale, self.scale)
-        Gdk.cairo_set_source_pixbuf(cr, self.pixbuf, 0, 0)
-        cr.paint()
+        if not self.live_background:
+            Gdk.cairo_set_source_pixbuf(cr, self.pixbuf, 0, 0)
+            cr.paint()
         for word in self.words:
             selected = word is self.selected
             hover = word is self.hovered

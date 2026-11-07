@@ -116,6 +116,10 @@ class Smoke(Application):
     def do_command_line(self, _command_line):
         self.generation += 1
         self.show_capture(self.generation, png, monitor, recognize(png, self.config))
+        # Keep previews on the synthetic frame even when the live overlay is the default.
+        if self.overlay.live_background:
+            self.overlay.on_key(None, SimpleNamespace(keyval=Gdk.KEY_F2))
+        assert not self.overlay.live_background
         GLib.timeout_add(100, self.check)
         return 0
 
