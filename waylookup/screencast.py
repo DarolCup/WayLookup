@@ -2,6 +2,7 @@
 
 import logging
 import os
+import tempfile
 from time import monotonic
 from uuid import uuid4
 
@@ -10,7 +11,8 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import Gio, GLib, Gst  # noqa: E402
 
-from .desktop import CaptureCancelled  # noqa: E402
+from .config import config_path  # noqa: E402
+from .desktop import APP_ID, CaptureCancelled  # noqa: E402
 
 LOG = logging.getLogger(__name__)
 BUS_NAME = "org.freedesktop.portal.Desktop"
@@ -43,8 +45,35 @@ class PortalCapture:
     def __init__(self, context, stop):
         self.context = context
         self.stop = stop
-        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+        # Register independently of GTK's shared bus, which may have already used other portals.
+        address = Gio.dbus_address_get_for_bus_sync(Gio.BusType.SESSION)
+        self.bus = Gio.DBusConnection.new_for_address_sync(
+            address,
+            Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+            None,
+            None,
+        )
         self.sender = self.bus.get_unique_name()[1:].replace(".", "_")
+
+    def source_options(self, restore_token):
+        try:
+            self.bus.call_sync(
+                BUS_NAME, DESKTOP_PATH, "org.freedesktop.host.portal.Registry", "Register",
+                GLib.Variant("(sa{sv})", (APP_ID, {})), None, Gio.DBusCallFlags.NONE, 5000, None,
+            )
+        except GLib.Error as error:
+            LOG.debug("Portal Registry: %s", error)
+        (version,) = self.bus.call_sync(
+            BUS_NAME, DESKTOP_PATH, "org.freedesktop.DBus.Properties", "Get",
+            GLib.Variant("(ss)", (SCREENCAST, "version")), None,
+            Gio.DBusCallFlags.NONE, 5000, None,
+        ).unpack()
+        options = {"types": GLib.Variant("u", 1)}
+        if version >= 4:
+            options["persist_mode"] = GLib.Variant("u", 2)
+            if restore_token:
+                options["restore_token"] = GLib.Variant("s", restore_token)
+        return options
 
     def close(self, path, interface):
         try:
@@ -147,26 +176,63 @@ def read_frame(fd, node, serial, stop):
         pipeline.set_state(Gst.State.NULL)
 
 
-def capture_screen(stop):
+def load_restore_token(path):
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return ""
+    except (OSError, UnicodeError) as error:
+        LOG.warning("Не удалось прочитать разрешение на захват: %s", error)
+        return ""
+
+
+def save_restore_token(path, token):
+    try:
+        if not token:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".screencast-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(token)
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+    except OSError as error:
+        LOG.warning("Не удалось сохранить разрешение на захват: %s", error)
+
+
+def capture_screen(stop, choose_monitor=False):
     check_gstreamer()
     context = GLib.MainContext.new()
     context.push_thread_default()
     try:
         portal = PortalCapture(context, stop)
-        token = "waylookup_" + uuid4().hex
-        result = portal.request("CreateSession", "(a{sv})", session_handle_token=GLib.Variant("s", token))
-        session = result["session_handle"]
         try:
-            portal.request("SelectSources", "(oa{sv})", session, types=GLib.Variant("u", 1))
-            result = portal.request("Start", "(osa{sv})", session, "", timeout=90)
-            streams = result.get("streams", [])
-            if len(streams) != 1:
-                raise RuntimeError("Портал ScreenCast не вернул один монитор")
-            node, properties = streams[0]
-            position = properties.get("position")
-            monitor = None if position is None else dict(zip(("x", "y"), position))
-            return portal.frame(session, node, properties.get("pipewire-serial")), monitor
+            token_path = config_path().with_name("screencast-token")
+            restore_token = "" if choose_monitor else load_restore_token(token_path)
+            options = portal.source_options(restore_token)
+            token = "waylookup_" + uuid4().hex
+            result = portal.request(
+                "CreateSession", "(a{sv})", session_handle_token=GLib.Variant("s", token)
+            )
+            session = result["session_handle"]
+            try:
+                portal.request("SelectSources", "(oa{sv})", session, **options)
+                result = portal.request("Start", "(osa{sv})", session, "", timeout=90)
+                save_restore_token(token_path, result.get("restore_token"))
+                streams = result.get("streams", [])
+                if len(streams) != 1:
+                    raise RuntimeError("Портал ScreenCast не вернул один монитор")
+                node, properties = streams[0]
+                position = properties.get("position")
+                monitor = None if position is None else dict(zip(("x", "y"), position))
+                return portal.frame(session, node, properties.get("pipewire-serial")), monitor
+            finally:
+                portal.close(session, SESSION)
         finally:
-            portal.close(session, SESSION)
+            portal.bus.close_sync(None)
     finally:
         context.pop_thread_default()

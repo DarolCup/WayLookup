@@ -12,33 +12,47 @@ This is an early independent project, not affiliated with Lookupper. The screens
 
 ## Fedora KDE Plasma and GNOME
 
-Run the installer as your normal user in a Wayland session. It detects the desktop, installs system dependencies using `sudo dnf`, and adds `waylookup` to `~/.local/bin`.
+### Quick install
 
-**With curl**
+Run this in a Wayland session to install or update WayLookup.
 
 ```bash
-installer=$(mktemp)
-curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/main/install-fedora.sh -o "$installer" &&
-  bash "$installer"
-rm -f "$installer"
+curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/main/install-fedora.sh | bash
 ```
 
-**With Git**
+The installer installs dependencies using `sudo dnf`, starts the user service and enables it at login. Open **WayLookup** from the application menu for settings. Run `~/.local/bin/waylookup doctor` to check dependencies.
+
+- **GNOME.** Press **Alt+Q**. On the first capture, choose a screen, leave **Remember this selection** checked and click **Share**. WayLookup reuses the screen while the portal retains the permission. Use **Choose monitor** in WayLookup settings to switch screens. Choose a different shortcut in settings if Alt+Q is taken.
+- **KDE Plasma.** In **System Settings → Shortcuts**, bind `/home/YOUR_USER/.local/bin/waylookup capture` to your preferred shortcut.
+
+### Build from source
 
 ```bash
 git clone https://github.com/DarolCup/WayLookup.git
 cd WayLookup
-./install-fedora.sh
+./install-fedora.sh --deps-only
+python3 -m venv --system-site-packages .venv
+.venv/bin/python -m pip install build
+.venv/bin/python -m build
+.venv/bin/python -m pip install dist/waylookup-*.whl
+.venv/bin/waylookup doctor
+.venv/bin/waylookup daemon
 ```
+
+For development, run `./scripts/waylookup daemon` from the checkout after installing the dependencies. Outside a graphical session, pass `--desktop plasma` or `--desktop gnome`. Launch the virtual environment build manually.
+
+The quick installer places the launcher in `~/.local/bin`, application files in `~/.local/lib/waylookup/`, and the user unit in `~/.config/systemd/user/waylookup.service`. Settings and capture permission are stored in `~/.config/waylookup/`. Dictionaries and vocabulary are stored in `~/.local/share/waylookup/`. XDG overrides apply to the configuration and data paths.
+
+### Uninstall
+
+Remove the application, launcher, autostart service and managed GNOME shortcut.
 
 ```bash
-~/.local/bin/waylookup doctor
-~/.local/bin/waylookup settings
+curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/main/install-fedora.sh |
+  bash -s -- --uninstall
 ```
 
-Bind `/home/YOUR_USER/.local/bin/waylookup capture` to a shortcut such as **Alt+Q**. On **Plasma**, open **System Settings → Shortcuts**. On **GNOME**, open **Keyboard → View and Customize Shortcuts → Custom Shortcuts**. GNOME prompts you to choose and share a monitor at capture time.
-
-To update, rerun the installer with the latest sources, run `~/.local/bin/waylookup quit` and invoke capture again. Outside a graphical session, use `--desktop plasma` or `--desktop gnome` to select the dependencies.
+Settings, dictionaries and vocabulary are kept by default. Add `--purge` after `--uninstall` to delete them too. For a source build, run `.venv/bin/waylookup quit` first. On GNOME, also run `.venv/bin/waylookup shortcut --remove`. Then uninstall the wheel with `.venv/bin/python -m pip uninstall waylookup`.
 
 ## Install on Arch Linux
 

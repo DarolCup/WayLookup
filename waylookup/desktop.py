@@ -1,6 +1,21 @@
 """Wayland desktop selection and screen capture dispatch."""
 
 import os
+from pathlib import Path
+import shlex
+import sys
+
+
+APP_ID = "io.github.waylookup.WayLookup"
+
+
+def capture_command() -> str:
+    launcher = Path.home() / ".local/bin/waylookup"
+    if launcher.is_symlink() and launcher.resolve() == Path(sys.argv[0]).resolve():
+        return shlex.join([str(launcher), "capture"])
+    from .hyprland import launch_command
+
+    return launch_command("capture")
 
 
 class CaptureCancelled(Exception):
@@ -20,7 +35,7 @@ def current_desktop() -> str | None:
     return None
 
 
-def capture_screen(desktop, stop):
+def capture_screen(desktop, stop, choose_monitor=False):
     if desktop == "hyprland":
         from .hyprland import capture_output, focused_monitor
 
@@ -33,5 +48,5 @@ def capture_screen(desktop, stop):
     if desktop == "gnome":
         from .screencast import capture_screen as capture_gnome
 
-        return capture_gnome(stop)
+        return capture_gnome(stop, choose_monitor)
     raise RuntimeError("Рабочий стол не поддерживается")

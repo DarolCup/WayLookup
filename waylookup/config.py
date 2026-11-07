@@ -11,12 +11,12 @@ from urllib.parse import urlsplit
 
 def config_path() -> Path:
     return (
-        Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "waylookup/config.json"
+        Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "waylookup/config.json"
     )
 
 
 def data_dir() -> Path:
-    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "waylookup"
+    return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "waylookup"
 
 
 MODIFIERS = {"SHIFT": 1, "CTRL": 4, "ALT": 8, "SUPER": 64}

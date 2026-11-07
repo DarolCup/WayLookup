@@ -14,35 +14,56 @@ WayLookup работает в **Arch Linux с Hyprland** и **Fedora с KDE Plas
 
 ## Fedora KDE Plasma и GNOME
 
-Запустите установку в сессии Wayland от обычного пользователя. Скрипт определит рабочий стол, установит системные зависимости через `sudo dnf` и добавит команду `waylookup` в `~/.local/bin`.
+### Быстрая установка
 
-**Через curl** (без клонирования репозитория):
+Выполните в терминале в сессии Wayland. Эта же команда обновляет уже установленный WayLookup.
 
 ```bash
-installer=$(mktemp)
-curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/main/install-fedora.sh -o "$installer" &&
-  bash "$installer"
-rm -f "$installer"
+curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/main/install-fedora.sh | bash
 ```
 
-**Через Git**:
+Скрипт ставит системные зависимости через `sudo dnf`, запускает фоновый сервис и включает запуск при входе. **WayLookup** появится в меню приложений и откроет настройки. Команда `~/.local/bin/waylookup doctor` покажет состояние зависимостей.
+
+- **GNOME.** Нажмите **Alt+Q**. При первом захвате выберите экран, оставьте включённым **«Запомнить этот выбор»** и нажмите **«Поделиться»**. Следующие захваты используют этот экран, пока портал сохраняет разрешение. Для смены экрана нажмите **«Выбрать монитор…»** в настройках. Если Alt+Q занят, укажите другое сочетание там же.
+- **KDE Plasma.** В **Системные настройки → Комбинации клавиш** назначьте команду `/home/ВАШ_ПОЛЬЗОВАТЕЛЬ/.local/bin/waylookup capture` на нужное сочетание.
+
+### Сборка из исходников
 
 ```bash
 git clone https://github.com/DarolCup/WayLookup.git
 cd WayLookup
-./install-fedora.sh
+./install-fedora.sh --deps-only
+python3 -m venv --system-site-packages .venv
+.venv/bin/python -m pip install build
+.venv/bin/python -m build
+.venv/bin/python -m pip install dist/waylookup-*.whl
+.venv/bin/waylookup doctor
+.venv/bin/waylookup daemon
 ```
 
-Проверка и первый запуск:
+Для разработки можно запустить `./scripts/waylookup daemon` прямо из репозитория после установки зависимостей. При установке вне графической сессии передайте `--desktop plasma` или `--desktop gnome`. Сборка в `.venv` запускается вручную.
+
+### Где хранятся файлы
+
+| Что | Путь по умолчанию |
+| --- | --- |
+| Команда и установленные версии | `~/.local/bin/waylookup`, `~/.local/lib/waylookup/` |
+| Настройки и разрешение на захват | `~/.config/waylookup/` |
+| Словари и история | `~/.local/share/waylookup/` |
+| Сервис и ярлык | `~/.config/systemd/user/waylookup.service`, `~/.local/share/applications/io.github.waylookup.WayLookup.desktop` |
+
+У каждого пользователя свои настройки и словари. Пути конфигурации и данных учитывают `XDG_CONFIG_HOME` и `XDG_DATA_HOME`. Состояние сервиса можно посмотреть через `systemctl --user status waylookup.service`, журнал через `journalctl --user -u waylookup.service`.
+
+### Удаление
+
+Удалить программу, ярлык, автозапуск и сочетание WayLookup в GNOME:
 
 ```bash
-~/.local/bin/waylookup doctor
-~/.local/bin/waylookup settings
+curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/main/install-fedora.sh |
+  bash -s -- --uninstall
 ```
 
-Для захвата назначьте команду `/home/ВАШ_ПОЛЬЗОВАТЕЛЬ/.local/bin/waylookup capture` на удобное сочетание, например **Alt+Q**. В **Plasma** откройте **Системные настройки → Комбинации клавиш**. В **GNOME** откройте **Клавиатура → Просмотр и настройка комбинаций клавиш → Пользовательские комбинации**. GNOME при захвате попросит выбрать монитор и подтвердить доступ.
-
-Чтобы обновить WayLookup, повторите установку с актуальными исходниками и перезапустите приложение командой `~/.local/bin/waylookup quit`, затем снова вызовите захват. Вне графической сессии рабочий стол можно указать явно через `--desktop plasma` или `--desktop gnome`.
+Настройки, словари и история сохраняются. Чтобы удалить и их, добавьте `--purge` после `--uninstall`. Для сборки из исходников сначала выполните `.venv/bin/waylookup quit`. В GNOME также выполните `.venv/bin/waylookup shortcut --remove`. Затем удалите пакет командой `.venv/bin/python -m pip uninstall waylookup`.
 
 ## Установка готового пакета Arch
 

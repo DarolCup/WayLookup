@@ -15,10 +15,10 @@ from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk  # noqa: E402
 
 from .card import TranslationCard  # noqa: E402
 from .config import Config  # noqa: E402
-from .desktop import CaptureCancelled, capture_screen, current_desktop  # noqa: E402
+from .desktop import APP_ID, CaptureCancelled, capture_screen, current_desktop  # noqa: E402
 from .dictionary import Dictionary  # noqa: E402
 from .history import save_lookup  # noqa: E402
-from .hyprland import Hotkey, watch_reload  # noqa: E402
+from .hyprland import Hotkey as HyprlandHotkey, watch_reload  # noqa: E402
 from .ocr import recognize, sentence_for  # noqa: E402
 from .translation import LookupResult, Translator  # noqa: E402
 
@@ -220,7 +220,7 @@ class Settings(Gtk.ApplicationWindow):
         root.pack_start(label("WayLookup", "word"), False, False, 0)
         hint = (
             "Настройте перевод один раз — дальше достаточно бинда."
-            if app.desktop == "hyprland"
+            if app.desktop != "plasma"
             else "Назначьте команду waylookup capture в системных настройках клавиатуры."
         )
         root.pack_start(label(hint, "muted"), False, False, 0)
@@ -232,7 +232,7 @@ class Settings(Gtk.ApplicationWindow):
         self.inputs = {}
         row = 0
         specs = []
-        if app.desktop == "hyprland":
+        if app.desktop != "plasma":
             specs.extend([
                 ("hotkey", "Бинд", None),
                 ("register_hotkey", "Регистрировать бинд", "bool"),
@@ -317,6 +317,10 @@ class Settings(Gtk.ApplicationWindow):
         import_button = Gtk.Button(label="Импорт словаря…")
         import_button.connect("clicked", self.import_dictionary)
         buttons.pack_start(import_button, False, False, 0)
+        if app.desktop == "gnome":
+            monitor_button = Gtk.Button(label="Выбрать монитор…")
+            monitor_button.connect("clicked", lambda *_: app.capture(choose_monitor=True))
+            buttons.pack_start(monitor_button, False, False, 0)
         cancel = Gtk.Button(label="Отмена")
         cancel.connect("clicked", lambda *_: self.destroy())
         buttons.pack_end(cancel, False, False, 0)
@@ -424,12 +428,13 @@ class Application(Gtk.Application):
                 raise RuntimeError("Композитор не поддерживает layer-shell")
             self.layer_shell = GtkLayerShell
         super().__init__(
-            application_id="io.github.waylookup.WayLookup",
+            application_id=APP_ID,
             flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE,
         )
         self.config = Config.load()
         self.overlay = None
         self.settings = None
+        self.hidden_settings = None
         self.hotkey = None
         self.capturing = False
         self.generation = 0
@@ -457,8 +462,9 @@ class Application(Gtk.Application):
         self.setup_tray()
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.quit_signal)
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self.quit_signal)
-        if self.desktop == "hyprland":
+        if self.desktop != "plasma":
             GLib.idle_add(self.setup_hotkey)
+        if self.desktop == "hyprland":
             threading.Thread(
                 target=watch_reload,
                 args=(lambda: GLib.idle_add(self.setup_hotkey), self.stop),
@@ -470,6 +476,8 @@ class Application(Gtk.Application):
         command = args[1] if len(args) > 1 else "daemon"
         if command == "capture":
             self.capture()
+        elif command == "choose-monitor":
+            self.capture(choose_monitor=True)
         elif command == "settings":
             self.open_settings()
         elif command == "quit":
@@ -520,29 +528,37 @@ class Application(Gtk.Application):
         self.send_notification(None, notification)
         LOG.warning("%s: %s", title, body)
 
+    def get_hotkey(self):
+        if self.hotkey is None:
+            if self.desktop == "gnome":
+                from .gnome_shortcut import Hotkey
+
+                self.hotkey = Hotkey()
+            else:
+                self.hotkey = HyprlandHotkey()
+        return self.hotkey
+
     def setup_hotkey(self):
         try:
             if self.config.register_hotkey:
-                if self.hotkey is None:
-                    self.hotkey = Hotkey()
-                self.hotkey.register(self.config.hotkey)
+                self.get_hotkey().register(self.config.hotkey)
+            elif self.desktop == "gnome":
+                self.get_hotkey().remove()
         except Exception as error:
             self.notify("Бинд WayLookup", str(error))
         return False
 
     def apply_config(self, config):
-        if self.desktop != "hyprland":
+        if self.desktop == "plasma":
             config.save()
             self.config = config
             return
         old = self.config
         try:
             if config.register_hotkey:
-                if self.hotkey is None:
-                    self.hotkey = Hotkey()
-                self.hotkey.register(config.hotkey)
-            elif self.hotkey:
-                self.hotkey.remove()
+                self.get_hotkey().register(config.hotkey)
+            elif self.hotkey or self.desktop == "gnome":
+                self.get_hotkey().remove()
             config.save()
         except Exception:
             if self.hotkey:
@@ -553,19 +569,33 @@ class Application(Gtk.Application):
             raise
         self.config = config
 
-    def capture(self):
+    def capture(self, choose_monitor=False):
         if self.overlay:
             self.overlay.destroy()
             return
-        if self.capturing or self.settings:
+        if self.capturing:
             return
+        if self.settings:
+            if self.desktop != "gnome" or getattr(self.settings, "chooser", None):
+                return
+            self.hidden_settings = self.settings
+            self.settings.hide()
         self.capturing = True
         self.generation += 1
         generation = self.generation
 
+        if self.hidden_settings:
+            GLib.timeout_add(200, self.begin_capture, generation, choose_monitor)
+        else:
+            self.begin_capture(generation, choose_monitor)
+
+    def begin_capture(self, generation, choose_monitor):
+        if self.stop.is_set():
+            return False
+
         def run_capture():
             try:
-                png, monitor = capture_screen(self.desktop, self.stop)
+                png, monitor = capture_screen(self.desktop, self.stop, choose_monitor)
                 GLib.idle_add(self.show_capture, generation, png, monitor)
             except CaptureCancelled:
                 GLib.idle_add(self.capture_failed, generation, None)
@@ -573,17 +603,19 @@ class Application(Gtk.Application):
                 GLib.idle_add(self.capture_failed, generation, str(error))
 
         self.capture_executor.submit(run_capture)
+        return False
 
     def show_capture(self, generation, png, monitor):
         if generation != self.generation or self.stop.is_set():
             return False
         self.capturing = False
-        if self.settings:
+        if self.settings and self.settings is not self.hidden_settings:
             return False
         try:
             self.overlay = Overlay(self, png, monitor)
         except Exception as error:
             self.notify("Ошибка оверлея", str(error))
+            self.restore_settings()
             return False
         config = self.config
 
@@ -602,6 +634,7 @@ class Application(Gtk.Application):
             self.capturing = False
             if error:
                 self.notify("Не удалось захватить экран", error)
+            self.restore_settings()
         return False
 
     def ocr_finished(self, generation, words, error):
@@ -662,11 +695,19 @@ class Application(Gtk.Application):
             self.generation += 1
             if self.future:
                 self.future.cancel()
+            self.restore_settings()
+
+    def restore_settings(self):
+        if self.hidden_settings is not None:
+            if self.hidden_settings is self.settings and not self.stop.is_set():
+                self.settings.present()
+            self.hidden_settings = None
 
     def open_settings(self):
         if self.overlay:
             self.overlay.destroy()
         if self.settings:
+            self.hidden_settings = None
             self.settings.present()
             return
         self.settings = Settings(self)
@@ -696,7 +737,7 @@ class Application(Gtk.Application):
                 chooser.destroy()
             self.settings.destroy()
         try:
-            if self.hotkey:
+            if self.hotkey and self.desktop == "hyprland":
                 self.hotkey.remove()
         except Exception as error:
             LOG.warning("Не удалось удалить временный бинд: %s", error)

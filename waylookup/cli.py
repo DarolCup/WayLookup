@@ -100,11 +100,14 @@ def main(argv=None) -> int:
     for command, help_text in (
         ("daemon", "Запустить фоновый процесс"),
         ("capture", "Открыть/закрыть перевод экрана"),
+        ("choose-monitor", "Выбрать другой монитор для захвата в GNOME"),
         ("settings", "Открыть настройки"),
         ("quit", "Завершить демон"),
         ("doctor", "Проверить зависимости"),
     ):
         commands.add_parser(command, help=help_text)
+    shortcut_parser = commands.add_parser("shortcut", help="Настроить сочетание клавиш GNOME")
+    shortcut_parser.add_argument("--remove", action="store_true", help="Удалить сочетание WayLookup")
     config_parser = commands.add_parser(
         "config", help="Показать конфигурацию или создать файл по умолчанию"
     )
@@ -124,6 +127,17 @@ def main(argv=None) -> int:
     try:
         if args.command == "doctor":
             return doctor()
+        if args.command == "shortcut":
+            from .gnome_shortcut import Hotkey
+
+            hotkey = Hotkey()
+            config = Config() if args.remove else Config.load()
+            if args.remove or not config.register_hotkey:
+                hotkey.remove()
+            else:
+                hotkey.register(config.hotkey)
+                print(f"WayLookup: {config.hotkey}")
+            return 0
         if args.command == "config":
             config = Config.load()
             if args.init and not config_path().exists():
@@ -151,10 +165,13 @@ def main(argv=None) -> int:
                 print(f"Импортировано {count} слов")
             return 0
         os.environ.setdefault("GDK_BACKEND", "wayland")
-        if current_desktop() is None:
+        desktop = current_desktop()
+        if desktop is None:
             parser.error(
                 "Нужна Wayland-сессия Hyprland, KDE Plasma или GNOME. Проверьте waylookup doctor"
             )
+        if args.command == "choose-monitor" and desktop != "gnome":
+            parser.error("Команда choose-monitor доступна в GNOME")
         from .ui import Application
 
         app = Application()
