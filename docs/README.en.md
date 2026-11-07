@@ -18,15 +18,15 @@ Run the installer as your normal user in a Wayland session. It detects the deskt
 
 ```bash
 installer=$(mktemp)
-curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/codex/fedora-desktops/install-fedora.sh -o "$installer" &&
-  bash "$installer" --ref codex/fedora-desktops
+curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/main/install-fedora.sh -o "$installer" &&
+  bash "$installer"
 rm -f "$installer"
 ```
 
 **With Git**
 
 ```bash
-git clone --branch codex/fedora-desktops https://github.com/DarolCup/WayLookup.git
+git clone https://github.com/DarolCup/WayLookup.git
 cd WayLookup
 ./install-fedora.sh
 ```

@@ -20,15 +20,15 @@ WayLookup работает в **Arch Linux с Hyprland** и **Fedora с KDE Plas
 
 ```bash
 installer=$(mktemp)
-curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/codex/fedora-desktops/install-fedora.sh -o "$installer" &&
-  bash "$installer" --ref codex/fedora-desktops
+curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/main/install-fedora.sh -o "$installer" &&
+  bash "$installer"
 rm -f "$installer"
 ```
 
 **Через Git**:
 
 ```bash
-git clone --branch codex/fedora-desktops https://github.com/DarolCup/WayLookup.git
+git clone https://github.com/DarolCup/WayLookup.git
 cd WayLookup
 ./install-fedora.sh
 ```
