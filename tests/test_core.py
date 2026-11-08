@@ -15,7 +15,7 @@ from waylookup.history import save_lookup
 from waylookup.hyprland import Hotkey
 from waylookup.ocr import (
     STRIP_OVERLAP, Word, merge_words, parse_tsv, recognize, repair_split_words, sentence_for,
-    split_gray,
+    sparse_scale, split_gray, unscale,
 )
 from waylookup.translation import LookupResult, TranslationError, Translator, request_json
 
@@ -149,7 +149,7 @@ class OCRTests(unittest.TestCase):
         primary.return_value = [word]
         published = []
 
-        def second_pass(*_):
+        def second_pass(*_args, **_kwargs):
             self.assertEqual(published, [[word]])
             return [extra]
 
@@ -157,20 +157,53 @@ class OCRTests(unittest.TestCase):
         result = recognize(png, Config(), on_primary=published.append)
         self.assertEqual([item.text for item in result], ["Map", "Inventory"])
 
-    @patch("waylookup.ocr.recognize_sparse")
+    @patch("waylookup.ocr.recognize_sparse", return_value=[])
     @patch("waylookup.ocr.recognize_primary")
-    def test_sparse_pass_is_automatic_for_sparse_screens_and_optional_for_dense(self, primary, sparse):
+    def test_sparse_pass_runs_after_primary_and_enlarges_small_text(self, primary, sparse):
         png = b"\x89PNG\r\n\x1a\n" + b"\0" * 8 + struct.pack(">II", 1920, 1080)
-        word = Word("Map", 10, 10, 30, 15, 95, (1, 1), 1, 1)
-        primary.return_value = [word] * 100
-        self.assertEqual(recognize(png, Config()), primary.return_value)
-        sparse.assert_not_called()
-        sparse.return_value = []
-        self.assertEqual(recognize(png, Config(ocr_psm=11)), primary.return_value)
-        self.assertEqual(sparse.call_count, 1)
-        primary.return_value = [word]
-        self.assertEqual(recognize(png, Config()), primary.return_value)
-        self.assertEqual(sparse.call_count, 2)
+        small = Word("Map", 10, 10, 30, 12, 95, (1, 1), 1, 1)
+        primary.return_value = [small] * 100
+        published = []
+        self.assertEqual(recognize(png, Config(), on_primary=published.append), [small] * 100)
+        self.assertEqual(published, [[small] * 100])
+        self.assertEqual(sparse.call_args.kwargs["scale"], 2.0)
+        large = Word("Map", 10, 10, 60, 30, 95, (1, 1), 1, 1)
+        primary.return_value = [large] * 100
+        recognize(png, Config())
+        self.assertEqual(sparse.call_args.kwargs["scale"], 1.0)
+        self.assertAlmostEqual(sparse_scale(3840, 2160, [small]), (12e6 / (3840 * 2160)) ** 0.5)
+        self.assertEqual(sparse_scale(5120, 2880, [small]), 1.0)
+
+    def test_unscaled_sparse_words_return_to_screen_coordinates(self):
+        word = Word("Map", 20, 40, 60, 24, 95, (1, 1), 1, 1)
+        self.assertEqual(unscale([word], 2.0)[0], Word("Map", 10, 20, 30, 12, 95, (1, 1), 1, 1))
+
+    def test_tight_split_of_two_dictionary_words_is_joined_but_spaces_are_kept(self):
+        def line(gap):
+            return [
+                Word("Do", 0, 20, 20, 18, 90, (1, 1), 1, 1),
+                Word("some", 28, 20, 40, 18, 90, (1, 1), 1, 1),
+                Word("thing", 68 + gap, 20, 45, 18, 90, (1, 1), 1, 1),
+                Word("now.", 121 + gap, 20, 40, 18, 90, (1, 1), 1, 1),
+                Word("Ok", 169 + gap, 20, 20, 18, 90, (1, 1), 1, 1),
+            ]
+
+        known = lambda terms: terms & {"some", "thing", "something"}  # noqa: E731
+        self.assertEqual(
+            [word.text for word in repair_split_words(line(1), known)],
+            ["Do", "something", "now.", "Ok"],
+        )
+        self.assertEqual(len(repair_split_words(line(8), known)), 5)
+
+    def test_touching_fragments_of_unknown_word_are_joined(self):
+        words = [
+            Word("Use", 0, 20, 30, 18, 90, (1, 1), 1, 1),
+            Word("Kuber", 38, 20, 50, 18, 90, (1, 1), 1, 1),
+            Word("netes", 88, 20, 50, 18, 90, (1, 1), 1, 1),
+            Word("now", 146, 20, 30, 18, 90, (1, 1), 1, 1),
+        ]
+        result = repair_split_words(words, lambda terms: terms & {"use", "now"})
+        self.assertEqual([word.text for word in result], ["Use", "Kubernetes", "now"])
 
 
 class ConfigTests(unittest.TestCase):

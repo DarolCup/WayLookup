@@ -19,6 +19,9 @@ STRIP_OVERLAP = 48
 MAX_STRIPS = 4
 MIN_STRIP_HEIGHT = 240
 MIN_PARALLEL_PIXELS = 1_000_000
+# The background sparse pass upscales small text up to this many pixels.
+SPARSE_MAX_PIXELS = 12_000_000
+SMALL_TEXT_HEIGHT = 18
 LOG = logging.getLogger(__name__)
 
 
@@ -207,7 +210,31 @@ def recognize_primary(png: bytes, config: Config) -> list[Word]:
     return recognize_strips(strips, config)
 
 
-def recognize_sparse(png: bytes, config: Config) -> list[Word]:
+def sparse_scale(width: int, height: int, words: list[Word]) -> float:
+    """Tesseract reads best around 20-30 px letters; enlarge screens with small text."""
+    heights = sorted(word.height for word in words)
+    if heights and heights[len(heights) // 4] >= SMALL_TEXT_HEIGHT:
+        return 1.0
+    scale = min(2.0, (SPARSE_MAX_PIXELS / max(1, width * height)) ** 0.5)
+    return scale if scale >= 1.2 else 1.0
+
+
+def unscale(words: list[Word], scale: float) -> list[Word]:
+    if scale == 1:
+        return words
+    return [
+        replace(
+            word,
+            x=round(word.x / scale),
+            y=round(word.y / scale),
+            width=max(1, round(word.width / scale)),
+            height=max(1, round(word.height / scale)),
+        )
+        for word in words
+    ]
+
+
+def recognize_sparse(png: bytes, config: Config, scale: float = 1.0) -> list[Word]:
     sparse = replace(config, ocr_psm=11)
     gray = grayscale(png)
     if gray is None:
@@ -216,12 +243,18 @@ def recognize_sparse(png: bytes, config: Config) -> list[Word]:
         from PIL import ImageOps
 
         gray = ImageOps.invert(gray)
+    if scale != 1:
+        from PIL import Image
+
+        gray = gray.resize(
+            (round(gray.width * scale), round(gray.height * scale)), Image.Resampling.LANCZOS
+        )
     strips = split_gray(gray, sparse)
     if strips:
-        return recognize_strips(strips, sparse, adaptive_threshold=True)
+        return unscale(recognize_strips(strips, sparse, adaptive_threshold=True), scale)
     output = io.BytesIO()
     gray.save(output, "PPM")
-    return recognize_image(output.getvalue(), sparse, adaptive_threshold=True)
+    return unscale(recognize_image(output.getvalue(), sparse, adaptive_threshold=True), scale)
 
 
 def line_key(word: Word) -> tuple:
@@ -303,6 +336,33 @@ def split_candidate(left: Word, right: Word) -> tuple[str, str] | None:
     return first.casefold(), second.casefold()
 
 
+def line_spacing(words: list[Word]) -> dict[tuple, float]:
+    """Median space between words of each line with at least two real gaps."""
+    gaps: dict[tuple, list[int]] = {}
+    for left, right in zip(words, words[1:]):
+        gap = right.x - (left.x + left.width)
+        if line_key(left) == line_key(right) and gap > 0:
+            gaps.setdefault(line_key(left), []).append(gap)
+    return {key: sorted(values)[len(values) // 2] for key, values in gaps.items() if len(values) >= 2}
+
+
+def should_join(
+    pair: tuple[str, str], known: set[str], left: Word, right: Word, spacing: float | None,
+) -> bool:
+    gap = right.x - (left.x + left.width)
+    if "".join(pair) in known:
+        # "some" + "thing": both parts are words, so require a gap much tighter than a space.
+        return not all(part in known for part in pair) or (
+            spacing is not None and gap <= spacing * 0.45
+        )
+    # Names and jargon are missing from dictionaries: join only touching fragments.
+    return (
+        spacing is not None
+        and gap <= max(1, spacing * 0.2)
+        and not any(part in known for part in pair)
+    )
+
+
 def repair_split_words(
     words: list[Word], known_words: Callable[[set[str]], set[str]],
 ) -> list[Word]:
@@ -317,6 +377,7 @@ def repair_split_words(
     if not candidates:
         return words
     known = known_words(terms)
+    spacing = line_spacing(words)
     result = []
     skip = False
     for index, left in enumerate(words):
@@ -324,8 +385,8 @@ def repair_split_words(
             skip = False
             continue
         pair = candidates.get(index)
-        if pair and "".join(pair) in known and not all(part in known for part in pair):
-            right = words[index + 1]
+        right = words[index + 1] if pair else None
+        if pair and should_join(pair, known, left, right, spacing.get(line_key(left))):
             top = min(left.y, right.y)
             result.append(replace(
                 left,
@@ -353,14 +414,12 @@ def recognize(
     if not size or config.ocr_psm not in (3, 11):
         return words
     width, height = size
-    # Sparse screens benefit from a second segmentation mode. Keep dense screens fast
-    # unless the user explicitly selected the sparse-text mode.
-    if config.ocr_psm == 3 and len(words) >= max(24, width * height // 35_000):
-        return words
     if words and on_primary:
         on_primary(words)
+    # The primary boxes are already visible. A sparse pass, enlarged for small text, then finds
+    # headings, captions and other font sizes the page layout pass skipped.
     try:
-        extra = recognize_sparse(png, config)
+        extra = recognize_sparse(png, config, scale=sparse_scale(width, height, words))
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         LOG.warning("Дополнительный OCR: %s", error)
         return words

@@ -3,7 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import logging
-from math import ceil, floor
+from math import ceil, floor, pi
 from pathlib import Path
 import signal
 import threading
@@ -19,13 +19,38 @@ from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk  # noqa: E402
 from .card import TranslationCard  # noqa: E402
 from .config import Config  # noqa: E402
 from .desktop import APP_ID, CaptureCancelled, capture_screen, current_desktop  # noqa: E402
-from .dictionary import Dictionary  # noqa: E402
+from .dictionary import Dictionary, normalize  # noqa: E402
 from .history import save_lookup  # noqa: E402
 from .hyprland import Hotkey as HyprlandHotkey, watch_reload  # noqa: E402
+from .layout import (  # noqa: E402
+    Rect, ease_out_cubic, line_of, phrase_ranges, place_card, selection_range,
+)
 from .ocr import png_size, recognize, sentence_for  # noqa: E402
 from .translation import LookupResult, Translator  # noqa: E402
 
 LOG = logging.getLogger(__name__)
+
+# Highlight palette: calm blue for found words, warm amber for the selection.
+ACCENT = (0.541, 0.706, 1.0)  # #8AB4FF
+SELECTED = (1.0, 0.784, 0.341)  # #FFC857
+WORD_FADE = 0.18
+HOVER_FADE = 0.12
+CARD_MOTION = 0.17
+CARD_SLIDE = 10
+
+
+def rounded_rectangle(cr, x, y, width, height, radius):
+    radius = max(0.0, min(radius, width / 2, height / 2))
+    cr.new_sub_path()
+    cr.arc(x + width - radius, y + radius, radius, -pi / 2, 0)
+    cr.arc(x + width - radius, y + height - radius, radius, 0, pi / 2)
+    cr.arc(x + radius, y + height - radius, radius, pi / 2, pi)
+    cr.arc(x + radius, y + radius, radius, pi, 3 * pi / 2)
+    cr.close_path()
+
+
+def approach(value, target, step):
+    return min(target, value + step) if value < target else max(target, value - step)
 
 
 def label(text="", css=None, wrap=True):
@@ -88,8 +113,20 @@ class Overlay(Gtk.ApplicationWindow):
         super().__init__(application=app, title="WayLookup")
         self.app = app
         self.words = []
-        self.selected = None
+        self.selection = []
+        self.selection_auto = False
         self.hovered = None
+        self.drag = None
+        self.presence = {}
+        self.hover_level = {}
+        self.tick_id = 0
+        self.last_frame = None
+        self.card_side = None
+        self.card_from = None
+        self.card_to = None
+        self.card_state = (0.0, 0.0, 0.0)
+        self.card_progress = 1.0
+        self.card_layout = 0
         self.scale = 1.0
         self.offset = (0.0, 0.0)
         self.input_update = 0
@@ -122,9 +159,14 @@ class Overlay(Gtk.ApplicationWindow):
         self.canvas.set_hexpand(True)
         self.canvas.set_vexpand(True)
         self.canvas.set_app_paintable(True)
-        self.canvas.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.POINTER_MOTION_MASK)
+        self.canvas.add_events(
+            Gdk.EventMask.BUTTON_PRESS_MASK
+            | Gdk.EventMask.BUTTON_RELEASE_MASK
+            | Gdk.EventMask.POINTER_MOTION_MASK
+        )
         self.canvas.connect("draw", self.draw)
-        self.canvas.connect("button-press-event", self.click)
+        self.canvas.connect("button-press-event", self.press)
+        self.canvas.connect("button-release-event", self.release)
         self.canvas.connect("motion-notify-event", self.motion)
         self.canvas.connect("size-allocate", self.schedule_input_update)
         overlay.add(self.canvas)
@@ -133,6 +175,7 @@ class Overlay(Gtk.ApplicationWindow):
             app.config, gdk_monitor.get_geometry(), self.destroy, app.lookup, app.save_result
         )
         self.card.set_no_show_all(True)
+        self.card.connect("size-allocate", self.card_resized)
         overlay.add_overlay(self.card)
 
         self.bar = bar = Gtk.Box(spacing=14)
@@ -159,9 +202,17 @@ class Overlay(Gtk.ApplicationWindow):
         self.card.hide()
 
     def set_words(self, words):
+        # The refining OCR pass returns new objects; equal words keep their state.
+        known = set(words)
+        self.selection = [word for word in self.selection if word in known]
+        if self.hovered not in known:
+            self.hovered = None
+        self.presence = {word: self.presence.get(word, 0.0) for word in words}
+        self.hover_level = {w: v for w, v in self.hover_level.items() if w in known}
         self.words = words
+        self.animate()
         self.status.set_text(
-            f"{len(words)} слов · Нажмите на слово для перевода"
+            f"{len(words)} слов · Клик — слово или фраза · Протяните по словам — своя фраза"
             if words
             else "Текст не найден · Попробуйте другой язык OCR или PSM в настройках"
         )
@@ -265,24 +316,169 @@ class Overlay(Gtk.ApplicationWindow):
                 self.pixbuf = loader.get_pixbuf()
             Gdk.cairo_set_source_pixbuf(cr, self.pixbuf, 0, 0)
             cr.paint()
+            # Dim the frozen screenshot slightly so highlights stand out.
+            cr.set_source_rgba(0.02, 0.03, 0.05, 0.22)
+            cr.paint()
+        pixel = 1 / self.scale
+        pad = 2.5 * pixel
+        radius = 5 * pixel
+        selected = set(self.selection)
         for word in self.words:
-            selected = word is self.selected
-            hover = word is self.hovered
-            color = (1, 0.77, 0.3) if selected else (0.31, 0.87, 0.83)
-            cr.rectangle(word.x - 2, word.y - 2, word.width + 4, word.height + 4)
-            cr.set_source_rgba(*color, 0.25 if selected or hover else 0.06)
+            if word in selected:
+                continue
+            presence = ease_out_cubic(self.presence.get(word, 1.0))
+            hover = ease_out_cubic(self.hover_level.get(word, 0.0))
+            rounded_rectangle(
+                cr, word.x - pad, word.y - pad, word.width + 2 * pad, word.height + 2 * pad, radius
+            )
+            cr.set_source_rgba(*ACCENT, (0.10 + 0.16 * hover) * presence)
             cr.fill_preserve()
-            cr.set_source_rgba(*color, 0.95 if selected or hover else 0.45)
-            cr.set_line_width((2 if selected or hover else 1) / self.scale)
+            cr.set_source_rgba(*ACCENT, (0.42 + 0.53 * hover) * presence)
+            cr.set_line_width((1 + 0.6 * hover) * pixel)
+            cr.stroke()
+        for left, top, right, bottom in self.selection_boxes():
+            glow = 3 * pixel
+            rounded_rectangle(
+                cr, left - pad - glow, top - pad - glow,
+                right - left + 2 * (pad + glow), bottom - top + 2 * (pad + glow), radius + glow,
+            )
+            cr.set_source_rgba(*SELECTED, 0.16)
+            cr.fill()
+            rounded_rectangle(
+                cr, left - pad, top - pad, right - left + 2 * pad, bottom - top + 2 * pad, radius
+            )
+            cr.set_source_rgba(*SELECTED, 0.30)
+            cr.fill_preserve()
+            cr.set_source_rgba(*SELECTED, 0.95)
+            cr.set_line_width(1.8 * pixel)
             cr.stroke()
         cr.restore()
         return False
 
+    def selection_boxes(self):
+        """One rounded box per line of the selection in image coordinates."""
+        boxes = {}
+        for word in self.selection:
+            box = boxes.get(line_of(word))
+            edges = (word.x, word.y, word.x + word.width, word.y + word.height)
+            boxes[line_of(word)] = edges if box is None else (
+                min(box[0], edges[0]), min(box[1], edges[1]),
+                max(box[2], edges[2]), max(box[3], edges[3]),
+            )
+        return list(boxes.values())
+
+    # ------------------------------------------------------------ animation
+    def animate(self):
+        if not self.tick_id:
+            self.last_frame = None
+            self.tick_id = self.add_tick_callback(self.on_tick)
+
+    def on_tick(self, _widget, clock):
+        now = clock.get_frame_time() / 1_000_000
+        step = 0.0 if self.last_frame is None else min(0.05, now - self.last_frame)
+        self.last_frame = now
+        busy = False
+        for word, value in self.presence.items():
+            if value < 1:
+                self.presence[word] = min(1.0, value + step / WORD_FADE)
+                busy = True
+        for word in set(self.hover_level) | ({self.hovered} - {None}):
+            value = self.hover_level.get(word, 0.0)
+            target = 1.0 if word is self.hovered else 0.0
+            value = approach(value, target, step / HOVER_FADE)
+            if value != target:
+                busy = True
+            if value <= 0:
+                self.hover_level.pop(word, None)
+            else:
+                self.hover_level[word] = value
+        if self.card_progress < 1 and self.card_to is not None:
+            self.card_progress = min(1.0, self.card_progress + step / CARD_MOTION)
+            busy = busy or self.card_progress < 1
+            self.apply_card_state()
+        self.canvas.queue_draw()
+        if busy:
+            return True
+        self.tick_id = 0
+        return False
+
+    def apply_card_state(self):
+        eased = ease_out_cubic(self.card_progress)
+        state = tuple(a + (b - a) * eased for a, b in zip(self.card_from, self.card_to))
+        self.card_state = state
+        x, y, opacity = state
+        self.card.set_margin_start(max(0, round(x)))
+        self.card.set_margin_top(max(0, round(y)))
+        self.card.set_opacity(opacity)
+        if self.card_progress >= 1 and self.card_to[2] <= 0:
+            self.card.hide()
+
+    def move_card(self, target, start=None):
+        self.card_from = start if start is not None else self.card_state
+        self.card_to = target
+        self.card_progress = 0.0
+        self.apply_card_state()
+        self.animate()
+
+    # -------------------------------------------------------- card placement
+    def schedule_card_layout(self, *_):
+        if not self.card_layout:
+            self.card_layout = GLib.idle_add(self.layout_card)
+
+    def card_resized(self, _widget, allocation):
+        size = (allocation.width, allocation.height)
+        if size != getattr(self, "card_size", None):
+            self.card_size = size
+            self.schedule_card_layout()
+
+    def layout_card(self, appear=False):
+        self.card_layout = 0
+        if not self.card.get_visible() or not self.selection:
+            return False
+        self.update_transform()
+        ox, oy = self.offset
+        left, top, right, bottom = (
+            min(edge[i] for edge in self.selection_boxes()) if i < 2
+            else max(edge[i] for edge in self.selection_boxes())
+            for i in range(4)
+        )
+        anchor = Rect(
+            ox + left * self.scale, oy + top * self.scale,
+            (right - left) * self.scale, (bottom - top) * self.scale,
+        )
+        width = max(self.card.get_size_request()[0], self.card.get_preferred_width()[0])
+        height = self.card.get_preferred_height_for_width(width)[1]
+        x, y, side = place_card(
+            anchor, width, height,
+            self.canvas.get_allocated_width(), self.canvas.get_allocated_height(),
+            prefer=self.card_side,
+        )
+        if not appear and (x, y, 1.0) == self.card_to and side == self.card_side:
+            return False
+        self.card_side = side
+        if appear:
+            # Fade in while sliding a few pixels away from the word.
+            dx = {"right": -CARD_SLIDE, "left": CARD_SLIDE}.get(side, 0)
+            dy = {"below": -CARD_SLIDE, "above": CARD_SLIDE}.get(side, 0)
+            self.move_card((x, y, 1.0), start=(x + dx, y + dy, 0.0))
+        else:
+            self.move_card((x, y, 1.0))
+        return False
+
+    def hide_card(self):
+        if self.card.get_visible():
+            x, y, _opacity = self.card_state
+            self.move_card((x, y, 0.0))
+
+    # ----------------------------------------------------------- selection
     def word_at(self, x, y):
         x = (x - self.offset[0]) / self.scale
         y = (y - self.offset[1]) / self.scale
         matches = [w for w in self.words if w.contains(x, y, 3 / self.scale)]
         return min(matches, key=lambda w: w.width * w.height) if matches else None
+
+    def index_of(self, word):
+        return next(index for index, item in enumerate(self.words) if item is word)
 
     def motion(self, widget, event):
         word = self.word_at(event.x, event.y)
@@ -291,27 +487,90 @@ class Overlay(Gtk.ApplicationWindow):
             widget.get_window().set_cursor(
                 Gdk.Cursor.new_from_name(widget.get_display(), "pointer" if word else "default")
             )
-            widget.queue_draw()
+            self.animate()
+        if self.drag and word and event.state & Gdk.ModifierType.BUTTON1_MASK:
+            span = selection_range(self.words, self.drag[0], self.index_of(word))
+            if span and (span[1] > span[0] or self.drag[2]):
+                self.drag[2] = True
+                self.selection = self.words[span[0]:span[1] + 1]
+                widget.queue_draw()
         return False
 
-    def click(self, _widget, event):
+    def press(self, _widget, event):
         if event.button != 1:
             return False
+        if event.type != Gdk.EventType.BUTTON_PRESS:
+            return True  # Double and triple clicks repeat the first press.
         word = self.word_at(event.x, event.y)
-        if word:
-            self.selected = word
+        if not word:
+            self.selection = []
+            self.hide_card()
             self.canvas.queue_draw()
-            self.app.lookup(word.lookup, sentence_for(self.words, word))
+            return True
+        modifiers = Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.CONTROL_MASK
+        # [anchor index, single word requested, dragged]
+        self.drag = [self.index_of(word), bool(event.state & modifiers), False]
         return True
+
+    def release(self, _widget, event):
+        if event.button != 1 or not self.drag:
+            return False
+        index, single, dragged = self.drag
+        self.drag = None
+        if dragged and len(self.selection) > 1:
+            self.lookup_selection(self.selection, auto=False)
+            return True
+        word = self.words[index]
+        # A second click on a word of a found phrase translates only that word.
+        if self.selection_auto and len(self.selection) > 1 and word in self.selection:
+            single = True
+        first, last = (index, index) if single else self.phrase_span(index)
+        self.lookup_selection(self.words[first:last + 1], auto=last > first)
+        return True
+
+    def phrase_span(self, index):
+        ranges = phrase_ranges(self.words, index)
+        if not ranges:
+            return index, index
+        config = self.app.config
+        try:
+            known = self.app.dictionary.existing_words(
+                {text for *_span, text in ranges}, config.source, config.target
+            )
+        except Exception:  # noqa: BLE001 - phrase search is optional
+            LOG.debug("Поиск фраз недоступен", exc_info=True)
+            return index, index
+        for first, last, text in ranges:
+            if normalize(text) in known:
+                return first, last
+        return index, index
+
+    def lookup_selection(self, words, auto):
+        self.selection = list(words)
+        self.selection_auto = auto
+        self.canvas.queue_draw()
+        text = " ".join(word.lookup for word in words)
+        self.app.lookup(text, sentence_for(self.words, words[0]))
 
     def loading(self, word, sentence):
         self.last_result = None
+        appear = not self.card.get_visible() or self.card_state[2] < 0.5
         self.card.loading(word, sentence)
+        if self.selection_auto:
+            self.card.set_hint("Найдена фраза · нажмите на слово ещё раз, чтобы перевести только его")
+        if appear:
+            self.card_side = None
+            self.card.set_opacity(0)
         self.card.show()
+        if self.card_layout:
+            GLib.source_remove(self.card_layout)
+            self.card_layout = 0
+        self.layout_card(appear=appear)
 
     def show_result(self, result):
         self.last_result = result
         self.card.render(result)
+        self.schedule_card_layout()
 
 
 class Settings(Gtk.ApplicationWindow):

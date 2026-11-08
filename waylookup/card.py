@@ -50,10 +50,10 @@ class TranslationCard(Gtk.Box):
         self.last_result = None
         self.senses_signature = None
         self.get_style_context().add_class("translation-card")
-        self.set_size_request(min(720, max(240, geometry.width - 48)), -1)
-        self.set_halign(Gtk.Align.CENTER)
+        # The overlay positions the card next to the selected word with margins.
+        self.set_size_request(min(560, max(280, geometry.width - 32)), -1)
+        self.set_halign(Gtk.Align.START)
         self.set_valign(Gtk.Align.START)
-        self.set_margin_top(24)
 
         heading = box("card-heading", 10)
         self.pack_start(heading, False, False, 0)
@@ -83,14 +83,18 @@ class TranslationCard(Gtk.Box):
         self.scroll = Gtk.ScrolledWindow()
         self.scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self.scroll.set_propagate_natural_height(True)
-        self.scroll.set_max_content_height(max(100, min(440, geometry.height - 330)))
+        self.scroll.set_max_content_height(max(120, min(380, int(geometry.height * 0.42))))
         self.pack_start(self.scroll, True, True, 0)
         body = box("card-body", 18)
         self.scroll.add(body)
 
         word_section = box("", 10)
         body.pack_start(word_section, False, False, 0)
-        word_section.pack_start(text_label("ЗНАЧЕНИЯ СЛОВА", "section"), False, False, 0)
+        self.hint_label = text_label("", "card-hint")
+        self.hint_label.set_no_show_all(True)
+        word_section.pack_start(self.hint_label, False, False, 0)
+        self.meanings_title = text_label("ЗНАЧЕНИЯ СЛОВА", "section")
+        word_section.pack_start(self.meanings_title, False, False, 0)
         self.word_state = text_label("", "empty-state")
         word_section.pack_start(self.word_state, False, False, 0)
         self.meanings_box = box("", 12)
@@ -135,8 +139,15 @@ class TranslationCard(Gtk.Box):
         footer.pack_start(self.save_button, False, False, 0)
         self.show_all()
 
+    def set_hint(self, text):
+        self.hint_label.set_text(text)
+        self.hint_label.set_visible(bool(text))
+
     def loading(self, word, sentence):
         self.senses_signature = None
+        phrase = " " in word.strip()
+        self.meanings_title.set_text("ЗНАЧЕНИЯ ФРАЗЫ" if phrase else "ЗНАЧЕНИЯ СЛОВА")
+        self.set_hint("")
         self.word_label.set_text(clean_text(word, strip_markup=False))
         self.word_label.set_tooltip_text(clean_text(word, strip_markup=False))
         escaped = []
@@ -148,7 +159,7 @@ class TranslationCard(Gtk.Box):
         ):
             text = GLib.markup_escape_text(part)
             escaped.append(
-                f'<span foreground="#8ce8d6" weight="bold">{text}</span>'
+                f'<span foreground="#8ab4ff" weight="bold">{text}</span>'
                 if part.casefold() == word.casefold()
                 else text
             )
