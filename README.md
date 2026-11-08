@@ -343,7 +343,7 @@ python -m build
 
 ## 📄 Лицензия
 
-[MIT](LICENSE). Это самостоятельный проект, не связанный с Lookupper.
+[MIT](LICENSE).
 
 <div align="center">
 <sub>Код написан с помощью ИИ-агентов.</sub>
