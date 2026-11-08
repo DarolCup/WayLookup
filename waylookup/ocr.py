@@ -1,6 +1,7 @@
 """Tesseract TSV parsing, coordinates and sentence reconstruction without UI dependencies."""
 
 import csv
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 import io
@@ -225,8 +226,76 @@ def merge_words(primary: list[Word], extra: list[Word]) -> list[Word]:
     return [word for line in lines.values() for word in line]
 
 
-def recognize(png: bytes, config: Config) -> list[Word]:
+def split_candidate(left: Word, right: Word) -> tuple[str, str] | None:
+    if line_key(left) != line_key(right):
+        return None
+    first, second = left.lookup, right.lookup
+    if (
+        len(first) + len(second) < 5
+        or not first.isascii() or not second.isascii()
+        or not first.isalpha() or not second.isalpha()
+        or not left.text.endswith(first) or not right.text.startswith(second)
+    ):
+        return None
+    gap = right.x - (left.x + left.width)
+    height = min(left.height, right.height)
+    overlap = min(left.y + left.height, right.y + right.height) - max(left.y, right.y)
+    letter_width = (left.width + right.width) / (len(first) + len(second))
+    if (
+        not -1 <= gap <= max(2, letter_width * 1.05)
+        or overlap < height * 0.55
+        or max(left.height, right.height) > height * 1.6
+    ):
+        return None
+    return first.casefold(), second.casefold()
+
+
+def repair_split_words(
+    words: list[Word], known_words: Callable[[set[str]], set[str]],
+) -> list[Word]:
+    candidates = {}
+    terms = set()
+    for index, (left, right) in enumerate(zip(words, words[1:])):
+        pair = split_candidate(left, right)
+        if pair:
+            first, second = pair
+            candidates[index] = (first, second)
+            terms.update((first, second, first + second))
+    if not candidates:
+        return words
+    known = known_words(terms)
+    result = []
+    skip = False
+    for index, left in enumerate(words):
+        if skip:
+            skip = False
+            continue
+        pair = candidates.get(index)
+        if pair and "".join(pair) in known and not all(part in known for part in pair):
+            right = words[index + 1]
+            top = min(left.y, right.y)
+            result.append(replace(
+                left,
+                text=left.text + right.text,
+                y=top,
+                width=right.x + right.width - left.x,
+                height=max(left.y + left.height, right.y + right.height) - top,
+                confidence=min(left.confidence, right.confidence),
+            ))
+            skip = True
+        else:
+            result.append(left)
+    return result
+
+
+def recognize(
+    png: bytes, config: Config, *,
+    on_primary: Callable[[list[Word]], None] | None = None,
+    known_words: Callable[[set[str]], set[str]] | None = None,
+) -> list[Word]:
     words = recognize_primary(png, config)
+    if known_words and config.source == "en":
+        words = repair_split_words(words, known_words)
     size = png_size(png)
     if not size or config.ocr_psm not in (3, 11):
         return words
@@ -235,12 +304,17 @@ def recognize(png: bytes, config: Config) -> list[Word]:
     # unless the user explicitly selected the sparse-text mode.
     if config.ocr_psm == 3 and len(words) >= max(24, width * height // 35_000):
         return words
+    if words and on_primary:
+        on_primary(words)
     try:
         extra = recognize_sparse(png, config)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         LOG.warning("Дополнительный OCR: %s", error)
         return words
-    return merge_words(words, extra)
+    merged = merge_words(words, extra)
+    if known_words and config.source == "en" and merged is not words:
+        return repair_split_words(merged, known_words)
+    return merged
 
 
 ABBREVIATIONS = {

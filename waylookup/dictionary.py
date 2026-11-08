@@ -75,10 +75,9 @@ class Dictionary:
             db.execute("CREATE INDEX IF NOT EXISTS lookup_word ON entries(source,target,word)")
 
     @contextmanager
-    def connect(self):
-        db = sqlite3.connect(self.path, timeout=30)
+    def connect(self, timeout=30):
+        db = sqlite3.connect(self.path, timeout=timeout)
         try:
-            db.execute("PRAGMA busy_timeout=30000")
             with db:
                 yield db
         finally:
@@ -100,6 +99,25 @@ class Dictionary:
                 "SELECT 1 FROM entries WHERE source=? AND target=? AND book=? LIMIT 1",
                 (source, target, book),
             ).fetchone() is not None
+
+    def existing_words(self, words: set[str], source: str, target: str) -> set[str]:
+        if not words:
+            return set()
+        words = sorted({normalize(word) for word in words})
+        found = set()
+        try:
+            # OCR can continue without spelling hints during a concurrent dictionary import.
+            with self.connect(timeout=0.02) as db:
+                for start in range(0, len(words), 500):
+                    batch = words[start:start + 500]
+                    slots = ", ".join("?" for _ in batch)
+                    found.update(row[0] for row in db.execute(
+                        f"SELECT DISTINCT word FROM entries WHERE source=? AND target=? AND word IN ({slots})",
+                        (source, target, *batch),
+                    ))
+        except sqlite3.Error:
+            return set()
+        return found
 
     def books(self) -> list[tuple]:
         with self.connect() as db:

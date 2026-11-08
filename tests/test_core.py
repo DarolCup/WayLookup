@@ -13,7 +13,9 @@ from waylookup.dictionary import Dictionary, Sense
 from waylookup.default_dictionaries import wikdict_definitions
 from waylookup.history import save_lookup
 from waylookup.hyprland import Hotkey
-from waylookup.ocr import STRIP_OVERLAP, Word, merge_words, parse_tsv, recognize, sentence_for
+from waylookup.ocr import (
+    STRIP_OVERLAP, Word, merge_words, parse_tsv, recognize, repair_split_words, sentence_for,
+)
 from waylookup.translation import LookupResult, TranslationError, Translator, request_json
 
 
@@ -83,6 +85,48 @@ class OCRTests(unittest.TestCase):
         self.assertEqual(sentence_for(result, result[1]), "Take the sword.")
         self.assertNotEqual(result[-1].block, first.block)
 
+    def test_split_word_uses_one_click_area_and_preserves_sentence(self):
+        words = [
+            Word(text, x, 20, width, 18, 90, (1, 1), 1, 1)
+            for text, x, width in [('"En', 10, 35), ('glish"', 60, 73), ('works.', 151, 47)]
+        ]
+        result = repair_split_words(words, lambda terms: terms & {"english", "works"})
+        self.assertEqual([word.text for word in result], ['"English"', 'works.'])
+        self.assertTrue(result[0].contains(52, 25, padding=0))
+        self.assertEqual(result[0].lookup, "English")
+        self.assertEqual(sentence_for(result, result[0]), '"English" works.')
+
+    def test_split_word_does_not_join_two_words_or_jump_a_gap(self):
+        pairs = [
+            (Word("in", 10, 20, 16, 18, 90, (1, 1), 1, 1),
+             Word("side", 30, 20, 32, 18, 90, (1, 1), 1, 1)),
+            (Word("En", 10, 20, 16, 18, 90, (1, 1), 1, 1),
+             Word("glish", 40, 20, 36, 18, 90, (1, 1), 1, 1)),
+            (Word("En", 10, 20, 16, 18, 90, (1, 1), 1, 1),
+             Word("glish", 30, 20, 36, 18, 90, (1, 1), 1, 2)),
+        ]
+        for pair in pairs:
+            with self.subTest(pair=pair):
+                words = list(pair)
+                self.assertEqual(repair_split_words(words, lambda _: {"in", "side", "inside", "english"}), words)
+
+    @patch("waylookup.ocr.recognize_sparse")
+    @patch("waylookup.ocr.recognize_primary")
+    def test_primary_words_are_published_before_sparse_pass(self, primary, sparse):
+        png = b"\x89PNG\r\n\x1a\n" + b"\0" * 8 + struct.pack(">II", 1920, 1080)
+        word = Word("Map", 10, 10, 30, 15, 95, (1, 1), 1, 1)
+        extra = Word("Inventory", 500, 60, 70, 15, 90, (1, 1), 1, 2)
+        primary.return_value = [word]
+        published = []
+
+        def second_pass(*_):
+            self.assertEqual(published, [[word]])
+            return [extra]
+
+        sparse.side_effect = second_pass
+        result = recognize(png, Config(), on_primary=published.append)
+        self.assertEqual([item.text for item in result], ["Map", "Inventory"])
+
     @patch("waylookup.ocr.recognize_sparse")
     @patch("waylookup.ocr.recognize_primary")
     def test_sparse_pass_is_automatic_for_sparse_screens_and_optional_for_dense(self, primary, sparse):
@@ -142,6 +186,8 @@ class DictionaryTests(unittest.TestCase):
         self.assertEqual(len(self.dictionary.lookup("SWORD", "en", "ru")), 2)
         self.assertEqual(self.dictionary.lookup("don’t", "en", "ru")[0].text, "не делай")
         self.assertEqual(self.dictionary.lookup("sword", "en", "de"), [])
+        self.assertEqual(self.dictionary.existing_words({"SWORD", "missing"}, "en", "ru"), {"sword"})
+        self.assertEqual(self.dictionary.existing_words({"sword"}, "en", "de"), set())
         path.write_text('{"new": "новое", "invalid": 1}')
         with self.assertRaises(ValueError):
             self.dictionary.import_json(path, "en", "ru")

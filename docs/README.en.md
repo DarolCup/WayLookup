@@ -2,7 +2,7 @@
 
 [Русский README](../README.md)
 
-Click a word on a frozen screenshot to translate the word and its sentence. WayLookup runs on Wayland with Hyprland on Arch Linux, or KDE Plasma and GNOME on Fedora. The current interface is in Russian and the default translation direction is English → Russian.
+Click a highlighted word to translate the word and its sentence. WayLookup runs on Wayland with Hyprland on Arch Linux, or KDE Plasma and GNOME on Fedora. The current interface is in Russian and the default translation direction is English → Russian.
 
 ![WayLookup overlay](screenshot.png)
 
@@ -83,8 +83,8 @@ The system Python can use Arch's PyGObject packages directly. If using a virtual
 
 ## Translation and dictionaries
 
-- The overlay opens with OCR highlights already in place. Dense frames with a suitable horizontal gap can run OCR in two parallel strips. Screenshots stay local.
-- Automatic OCR runs a second pass when the first finds sparse text. For dense game interfaces with scattered labels, choose **11 · Games and sparse text** in OCR settings. The second pass uses local contrast when Pillow is available.
+- The overlay displays highlights from the first OCR pass while a second pass recovers sparse text. Dense frames with a suitable horizontal gap can run OCR in two parallel strips. Screenshots stay local.
+- For game interfaces with scattered labels, choose **11 · Games and sparse text** in OCR settings. The second pass uses local contrast when Pillow is available. WayLookup checks close English OCR fragments against the local dictionary to recover split words.
 - StarDict (`.ifo`, `.idx`/`.idx.gz`, `.dict`/`.dict.dz`, optional `.syn`) and JSON dictionaries, indexed locally in SQLite.
 - MyMemory is the default sentence provider and has a 500-byte request limit. Word and sentence providers can be selected independently.
 - Google Cloud Translation uses `WAYLOOKUP_GOOGLE_API_KEY`. For the user service, put the variable in `~/.config/waylookup/providers.env` and restart `waylookup.service`. [Google Cloud Translation API](https://docs.cloud.google.com/translate/docs/reference/rest/v2/translate)
@@ -142,7 +142,7 @@ A user service is included for sessions that correctly manage `graphical-session
 
 ## Limits and validation
 
-**The game can keep running while WayLookup shows the screenshot.** Only the captured monitor is covered. OCR accuracy depends on fonts, size, contrast and layout. Sentence boundaries are heuristic.
+The live overlay is supported on Plasma and Hyprland with Layer Shell and on GNOME with one monitor and the standard top bar. Press **F2** to switch to the captured frame if the text has moved. GNOME with multiple monitors uses a frozen frame. OCR accuracy depends on fonts, size, contrast and layout. Sentence boundaries are heuristic.
 
 Tested with Hyprland 0.57.0 and in isolated Fedora 45 sessions with KDE Plasma 6.8.2 and GNOME 51.1. Mixed DPI, HDR and Gamescope still need live testing. Ollama is tested against response contracts. Startup of large models may require a longer timeout.
 

@@ -100,6 +100,8 @@ class PortalCapture:
         subscription = self.bus.signal_subscribe(
             BUS_NAME, REQUEST, "Response", path, None, Gio.DBusSignalFlags.NONE, on_response
         )
+        tick = GLib.timeout_source_new(100)
+        tick.set_callback(lambda *_: GLib.SOURCE_CONTINUE)
         try:
             (handle,) = self.bus.call_sync(
                 BUS_NAME, DESKTOP_PATH, SCREENCAST, method,
@@ -110,14 +112,15 @@ class PortalCapture:
                 self.close(handle, REQUEST)
                 raise RuntimeError("Портал вернул неожиданный адрес запроса")
             deadline = monotonic() + timeout
+            # D-Bus signals wake the private GLib context immediately. The timer only
+            # bounds shutdown and timeout checks when the portal has no response yet.
+            tick.attach(self.context)
             while response is None:
                 if self.stop.is_set():
                     raise CaptureCancelled
                 if monotonic() >= deadline:
                     raise RuntimeError("Истекло время ожидания ответа портала ScreenCast")
-                self.context.iteration(False)
-                if response is None:
-                    self.stop.wait(0.05)
+                self.context.iteration(True)
             status, result = response
             if status == 1:
                 raise CaptureCancelled
@@ -125,6 +128,7 @@ class PortalCapture:
                 raise RuntimeError(f"Портал ScreenCast отклонил запрос {method}")
             return result
         finally:
+            tick.destroy()
             self.bus.signal_unsubscribe(subscription)
             if response is None:
                 self.close(path, REQUEST)

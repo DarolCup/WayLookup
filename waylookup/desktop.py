@@ -12,10 +12,13 @@ APP_ID = "io.github.waylookup.WayLookup"
 def capture_command() -> str:
     launcher = Path.home() / ".local/bin/waylookup"
     if launcher.is_symlink() and launcher.resolve() == Path(sys.argv[0]).resolve():
-        return shlex.join([str(launcher), "capture"])
-    from .hyprland import launch_command
+        fallback = [str(launcher), "capture"]
+    else:
+        from .hyprland import launch_command
 
-    return launch_command("capture")
+        fallback = shlex.split(launch_command("capture"))
+    action = f'gapplication action {APP_ID} capture >/dev/null 2>&1 || exec "$@"'
+    return shlex.join(["sh", "-c", action, "waylookup", *fallback])
 
 
 class CaptureCancelled(Exception):

@@ -21,7 +21,7 @@ from .desktop import APP_ID, CaptureCancelled, capture_screen, current_desktop  
 from .dictionary import Dictionary  # noqa: E402
 from .history import save_lookup  # noqa: E402
 from .hyprland import Hotkey as HyprlandHotkey, watch_reload  # noqa: E402
-from .ocr import recognize, sentence_for  # noqa: E402
+from .ocr import png_size, recognize, sentence_for  # noqa: E402
 from .translation import LookupResult, Translator  # noqa: E402
 
 LOG = logging.getLogger(__name__)
@@ -92,10 +92,12 @@ class Overlay(Gtk.ApplicationWindow):
         self.scale = 1.0
         self.offset = (0.0, 0.0)
         self.input_update = 0
-        loader = GdkPixbuf.PixbufLoader.new_with_type("png")
-        loader.write(png)
-        loader.close()
-        self.pixbuf = loader.get_pixbuf()
+        self.png = png
+        self.pixbuf = None
+        size = png_size(png)
+        if size is None:
+            raise ValueError("Не удалось определить размер снимка экрана")
+        self.image_width, self.image_height = size
         self.windowed_live = app.desktop == "gnome" and display.get_n_monitors() == 1
         self.monitor_geometry = gdk_monitor.get_geometry()
         if app.layer_shell:
@@ -193,9 +195,9 @@ class Overlay(Gtk.ApplicationWindow):
             top_inset = max(0, self.monitor_geometry.height - height)
             width = self.monitor_geometry.width
             height = self.monitor_geometry.height
-        self.scale = min(width / self.pixbuf.get_width(), height / self.pixbuf.get_height())
-        ox = (width - self.pixbuf.get_width() * self.scale) / 2
-        oy = (height - self.pixbuf.get_height() * self.scale) / 2 - top_inset
+        self.scale = min(width / self.image_width, height / self.image_height)
+        ox = (width - self.image_width * self.scale) / 2
+        oy = (height - self.image_height * self.scale) / 2 - top_inset
         self.offset = (ox, oy)
 
     def schedule_input_update(self, *_):
@@ -255,6 +257,11 @@ class Overlay(Gtk.ApplicationWindow):
         cr.translate(ox, oy)
         cr.scale(self.scale, self.scale)
         if not self.live_background:
+            if self.pixbuf is None:
+                loader = GdkPixbuf.PixbufLoader.new_with_type("png")
+                loader.write(self.png)
+                loader.close()
+                self.pixbuf = loader.get_pixbuf()
             Gdk.cairo_set_source_pixbuf(cr, self.pixbuf, 0, 0)
             cr.paint()
         for word in self.words:
@@ -541,6 +548,9 @@ class Application(Gtk.Application):
             application_id=APP_ID,
             flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE,
         )
+        capture_action = Gio.SimpleAction.new("capture", None)
+        capture_action.connect("activate", lambda *_: self.capture())
+        self.add_action(capture_action)
         self.config = Config.load()
         self.overlay = None
         self.settings = None
@@ -707,17 +717,39 @@ class Application(Gtk.Application):
         config = self.config
 
         def run_capture():
+            shown = False
+
+            def show_primary(words):
+                nonlocal shown
+                if not self.stop.is_set():
+                    shown = True
+                    GLib.idle_add(self.show_capture, generation, png, monitor, words)
+
             try:
                 png, monitor = capture_screen(self.desktop, self.stop, choose_monitor)
                 if not self.stop.is_set():
-                    words = recognize(png, config)
-                    GLib.idle_add(self.show_capture, generation, png, monitor, words)
+                    words = recognize(
+                        png, config, on_primary=show_primary,
+                        known_words=lambda terms: self.dictionary.existing_words(
+                            terms, config.source, config.target
+                        ),
+                    )
+                    if shown:
+                        GLib.idle_add(self.refine_capture, generation, words)
+                    else:
+                        show_primary(words)
             except CaptureCancelled:
                 GLib.idle_add(self.capture_failed, generation, None)
             except Exception as error:
                 GLib.idle_add(self.capture_failed, generation, str(error))
 
         self.capture_executor.submit(run_capture)
+        return False
+
+    def refine_capture(self, generation, words):
+        if generation == self.generation and self.overlay and not self.stop.is_set():
+            if words != self.overlay.words:
+                self.overlay.set_words(words)
         return False
 
     def show_capture(self, generation, png, monitor, words):
