@@ -15,6 +15,13 @@ import unicodedata
 from .config import Config
 
 STRIP_OVERLAP = 48
+# Tesseract is single-threaded per strip; more strips than this mostly adds model loads.
+MAX_STRIPS = 4
+MIN_STRIP_HEIGHT = 240
+MIN_PARALLEL_PIXELS = 1_000_000
+# The background sparse pass upscales small text up to this many pixels.
+SPARSE_MAX_PIXELS = 12_000_000
+SMALL_TEXT_HEIGHT = 18
 LOG = logging.getLogger(__name__)
 
 
@@ -108,67 +115,146 @@ def png_size(png: bytes) -> tuple[int, int] | None:
     return None
 
 
-def split_image(png: bytes, config: Config) -> tuple[bytes, bytes, int] | None:
-    size = png_size(png)
-    if not size or config.ocr_psm not in (3, 11) or len(os.sched_getaffinity(0)) < 2:
+def strip_count(width: int, height: int) -> int:
+    if width * height < MIN_PARALLEL_PIXELS:
+        return 1
+    cpus = len(os.sched_getaffinity(0))
+    return max(1, min(MAX_STRIPS, cpus, height // MIN_STRIP_HEIGHT))
+
+
+def find_cuts(gray, count: int) -> list[int]:
+    """Pick horizontal cut rows near equal fractions, preferring rows between text lines."""
+    from PIL import Image, ImageFilter
+
+    width, height = gray.size
+    edges = gray.filter(ImageFilter.FIND_EDGES).crop((1, 1, width - 1, height - 1))
+    # rows[index] is the mean edge strength of image row index + 1.
+    rows = edges.resize((1, height - 2), Image.Resampling.BOX).tobytes()
+    reach = max(1, height // (count * 4))
+    cuts = []
+    for index in range(1, count):
+        target = height * index // count
+        low = max(2, target - reach)
+        high = min(height - 3, target + reach)
+        # A cut through a text line is still safe: every strip overlaps its neighbours and
+        # keeps only words whose centre lies inside it. Quiet rows simply keep layouts intact.
+        cuts.append(min(
+            range(low, high + 1),
+            key=lambda row: (max(rows[row - 2:row + 1]), abs(row - target)),
+        ))
+    return cuts
+
+
+def split_image(png: bytes, config: Config) -> list[tuple[bytes, int, int, int]] | None:
+    """Return (image, offset, keep_from, keep_to) strips for parallel Tesseract runs."""
+    gray = grayscale(png)
+    if gray is None:
         return None
-    width, height = size
-    if width * height < 2_000_000 or height < 720:
+    return split_gray(gray, config)
+
+
+def grayscale(png: bytes):
+    if not png_size(png):
         return None
     try:
-        from PIL import Image, ImageFilter
+        from PIL import Image
     except ImportError:
         return None
     with Image.open(io.BytesIO(png)) as image:
-        gray = image.convert("L")
-    edges = gray.filter(ImageFilter.FIND_EDGES).crop((1, 1, width - 1, height - 1))
-    rows = edges.resize((1, height - 2), Image.Resampling.BOX).tobytes()
-    # Parallelize only dense frames with a quiet horizontal gutter near the middle.
-    for half in (rows[:height // 2], rows[height // 2:]):
-        if sum(value >= 3 for value in half) < len(half) // 4:
-            return None
-    middle = height // 2
-    for cut in sorted(range(height * 2 // 5, height * 3 // 5), key=lambda row: abs(row - middle)):
-        if max(rows[cut - 5:cut + 5]) <= 1:
-            break
-    else:
+        return image.convert("L")
+
+
+def split_gray(gray, config: Config) -> list[tuple[bytes, int, int, int]] | None:
+    if config.ocr_psm not in (3, 11):
         return None
-    parts = []
-    for top, bottom in ((0, cut + STRIP_OVERLAP), (cut - STRIP_OVERLAP, height)):
+    width, height = gray.size
+    count = strip_count(width, height)
+    if count < 2:
+        return None
+    bounds = [0, *find_cuts(gray, count), height]
+    strips = []
+    for keep_from, keep_to in zip(bounds, bounds[1:]):
+        top = max(0, keep_from - STRIP_OVERLAP)
+        bottom = min(height, keep_to + STRIP_OVERLAP)
         output = io.BytesIO()
         gray.crop((0, top, width, bottom)).save(output, "PPM")
-        parts.append(output.getvalue())
-    return parts[0], parts[1], cut
+        strips.append((output.getvalue(), top, keep_from, keep_to))
+    return strips
+
+
+def recognize_strips(
+    strips: list[tuple[bytes, int, int, int]], config: Config, **options,
+) -> list[Word]:
+    with ThreadPoolExecutor(max_workers=len(strips) - 1) as workers:
+        futures = [
+            workers.submit(recognize_image, image, config, True, **options)
+            for image, *_ in strips[:-1]
+        ]
+        last = recognize_image(strips[-1][0], config, True, **options)
+        results = [future.result() for future in futures] + [last]
+    words = []
+    for index, ((_image, offset, keep_from, keep_to), found) in enumerate(zip(strips, results)):
+        for word in found:
+            centre = offset + word.y + word.height / 2
+            if keep_from <= centre < keep_to:
+                words.append(replace(
+                    word, y=word.y + offset, block=(word.block[0] + index, word.block[1])
+                ))
+    return words
 
 
 def recognize_primary(png: bytes, config: Config) -> list[Word]:
-    parts = split_image(png, config)
-    if parts is None:
+    strips = split_image(png, config)
+    if not strips:
         return recognize_image(png, config)
-    top, bottom, cut = parts
-    with ThreadPoolExecutor(max_workers=2) as workers:
-        upper = workers.submit(recognize_image, top, config, True)
-        lower = recognize_image(bottom, config, True)
-    lower_offset = cut - STRIP_OVERLAP
-    return [word for word in upper.result() if word.y + word.height / 2 < cut] + [
-        replace(word, y=word.y + lower_offset, block=(word.block[0] + 1, word.block[1]))
-        for word in lower if word.y + word.height / 2 >= STRIP_OVERLAP
+    return recognize_strips(strips, config)
+
+
+def sparse_scale(width: int, height: int, words: list[Word]) -> float:
+    """Tesseract reads best around 20-30 px letters; enlarge screens with small text."""
+    heights = sorted(word.height for word in words)
+    if heights and heights[len(heights) // 4] >= SMALL_TEXT_HEIGHT:
+        return 1.0
+    scale = min(2.0, (SPARSE_MAX_PIXELS / max(1, width * height)) ** 0.5)
+    return scale if scale >= 1.2 else 1.0
+
+
+def unscale(words: list[Word], scale: float) -> list[Word]:
+    if scale == 1:
+        return words
+    return [
+        replace(
+            word,
+            x=round(word.x / scale),
+            y=round(word.y / scale),
+            width=max(1, round(word.width / scale)),
+            height=max(1, round(word.height / scale)),
+        )
+        for word in words
     ]
 
 
-def recognize_sparse(png: bytes, config: Config) -> list[Word]:
+def recognize_sparse(png: bytes, config: Config, scale: float = 1.0) -> list[Word]:
     sparse = replace(config, ocr_psm=11)
-    try:
-        from PIL import Image, ImageOps
-    except ImportError:
+    gray = grayscale(png)
+    if gray is None:
         return recognize_image(png, sparse)
-    with Image.open(io.BytesIO(png)) as image:
-        gray = image.convert("L")
     if sum(gray.histogram()[:128]) * 2 > gray.width * gray.height:
+        from PIL import ImageOps
+
         gray = ImageOps.invert(gray)
+    if scale != 1:
+        from PIL import Image
+
+        gray = gray.resize(
+            (round(gray.width * scale), round(gray.height * scale)), Image.Resampling.LANCZOS
+        )
+    strips = split_gray(gray, sparse)
+    if strips:
+        return unscale(recognize_strips(strips, sparse, adaptive_threshold=True), scale)
     output = io.BytesIO()
     gray.save(output, "PPM")
-    return recognize_image(output.getvalue(), sparse, adaptive_threshold=True)
+    return unscale(recognize_image(output.getvalue(), sparse, adaptive_threshold=True), scale)
 
 
 def line_key(word: Word) -> tuple:
@@ -195,7 +281,14 @@ def merge_words(primary: list[Word], extra: list[Word]) -> list[Word]:
                 continue
             horizontal = min(word.x + word.width, other.x + other.width) - max(word.x, other.x)
             area = min(word.width * word.height, other.width * other.height)
-            if horizontal > 0 and horizontal * vertical >= area * 0.5:
+            if horizontal > 0 and (
+                horizontal * vertical >= area * 0.5
+                # The sparse pass may box a word already found with a shifted or taller
+                # rectangle; such a duplicate looks like a highlight sliding off the word.
+                or word.lookup.casefold() == other.lookup.casefold()
+                or other.contains(word.x + word.width / 2, word.y + word.height / 2, 0)
+                or word.contains(other.x + other.width / 2, other.y + other.height / 2, 0)
+            ):
                 break
             if (
                 vertical >= 0.6 * min(word.height, other.height)
@@ -250,6 +343,33 @@ def split_candidate(left: Word, right: Word) -> tuple[str, str] | None:
     return first.casefold(), second.casefold()
 
 
+def line_spacing(words: list[Word]) -> dict[tuple, float]:
+    """Median space between words of each line with at least two real gaps."""
+    gaps: dict[tuple, list[int]] = {}
+    for left, right in zip(words, words[1:]):
+        gap = right.x - (left.x + left.width)
+        if line_key(left) == line_key(right) and gap > 0:
+            gaps.setdefault(line_key(left), []).append(gap)
+    return {key: sorted(values)[len(values) // 2] for key, values in gaps.items() if len(values) >= 2}
+
+
+def should_join(
+    pair: tuple[str, str], known: set[str], left: Word, right: Word, spacing: float | None,
+) -> bool:
+    gap = right.x - (left.x + left.width)
+    if "".join(pair) in known:
+        # "some" + "thing": both parts are words, so require a gap much tighter than a space.
+        return not all(part in known for part in pair) or (
+            spacing is not None and gap <= spacing * 0.45
+        )
+    # Names and jargon are missing from dictionaries: join only touching fragments.
+    return (
+        spacing is not None
+        and gap <= max(1, spacing * 0.2)
+        and not any(part in known for part in pair)
+    )
+
+
 def repair_split_words(
     words: list[Word], known_words: Callable[[set[str]], set[str]],
 ) -> list[Word]:
@@ -264,6 +384,7 @@ def repair_split_words(
     if not candidates:
         return words
     known = known_words(terms)
+    spacing = line_spacing(words)
     result = []
     skip = False
     for index, left in enumerate(words):
@@ -271,8 +392,8 @@ def repair_split_words(
             skip = False
             continue
         pair = candidates.get(index)
-        if pair and "".join(pair) in known and not all(part in known for part in pair):
-            right = words[index + 1]
+        right = words[index + 1] if pair else None
+        if pair and should_join(pair, known, left, right, spacing.get(line_key(left))):
             top = min(left.y, right.y)
             result.append(replace(
                 left,
@@ -300,14 +421,12 @@ def recognize(
     if not size or config.ocr_psm not in (3, 11):
         return words
     width, height = size
-    # Sparse screens benefit from a second segmentation mode. Keep dense screens fast
-    # unless the user explicitly selected the sparse-text mode.
-    if config.ocr_psm == 3 and len(words) >= max(24, width * height // 35_000):
-        return words
     if words and on_primary:
         on_primary(words)
+    # The primary boxes are already visible. A sparse pass, enlarged for small text, then finds
+    # headings, captions and other font sizes the page layout pass skipped.
     try:
-        extra = recognize_sparse(png, config)
+        extra = recognize_sparse(png, config, scale=sparse_scale(width, height, words))
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         LOG.warning("Дополнительный OCR: %s", error)
         return words

@@ -1,6 +1,6 @@
 # Local source-archive build. See README.md; no third-party dictionary data is bundled.
 pkgname=waylookup
-pkgver=0.1.1
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Click-to-translate screen overlay for Hyprland'
 arch=('any')

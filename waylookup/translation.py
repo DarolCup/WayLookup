@@ -226,7 +226,8 @@ class Translator:
                     if senses:
                         senses = [Sense(sense.text, f"{sense.source} · {form}") for sense in senses]
                         break
-            if senses or not config.dictionary_fallback:
+            # Dictionaries rarely know free phrases; translate them like a short sentence.
+            if senses or not (config.dictionary_fallback or " " in word.strip()):
                 return rank_senses(senses, word, sentence)
         provider = (
             config.sentence_provider if config.word_provider == "same" else config.word_provider
