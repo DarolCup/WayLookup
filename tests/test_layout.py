@@ -3,7 +3,7 @@ import unittest
 from waylookup.layout import (
     Rect, ease_out_cubic, phrase_ranges, place_card, selection_range,
 )
-from waylookup.ocr import Word
+from waylookup.ocr import Word, merge_words
 
 
 def line(*texts, line_number=1, paragraph=1):
@@ -77,6 +77,16 @@ class PhraseTests(unittest.TestCase):
         self.assertIsNone(selection_range(words, 0, 4))
         many = line(*"abcdefghij")
         self.assertIsNone(selection_range(many, 0, 9))
+
+
+class MergeTests(unittest.TestCase):
+    def test_shifted_duplicate_from_sparse_pass_is_dropped(self):
+        hello = Word("hello", 100, 100, 50, 16, 90, (1, 1), 1, 1)
+        shifted = Word("Hello", 101, 109, 50, 16, 80, (1, 1), 1, 1)  # 44% overlap
+        taller = Word("hel1o", 99, 96, 52, 40, 80, (1, 1), 1, 1)
+        below = Word("world", 100, 140, 50, 16, 80, (1, 1), 1, 1)
+        merged = merge_words([hello], [shifted, taller, below])
+        self.assertEqual([word.text for word in merged], ["hello", "world"])
 
 
 if __name__ == "__main__":

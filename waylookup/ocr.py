@@ -281,7 +281,14 @@ def merge_words(primary: list[Word], extra: list[Word]) -> list[Word]:
                 continue
             horizontal = min(word.x + word.width, other.x + other.width) - max(word.x, other.x)
             area = min(word.width * word.height, other.width * other.height)
-            if horizontal > 0 and horizontal * vertical >= area * 0.5:
+            if horizontal > 0 and (
+                horizontal * vertical >= area * 0.5
+                # The sparse pass may box a word already found with a shifted or taller
+                # rectangle; such a duplicate looks like a highlight sliding off the word.
+                or word.lookup.casefold() == other.lookup.casefold()
+                or other.contains(word.x + word.width / 2, word.y + word.height / 2, 0)
+                or word.contains(other.x + other.width / 2, other.y + other.height / 2, 0)
+            ):
                 break
             if (
                 vertical >= 0.6 * min(word.height, other.height)

@@ -37,6 +37,7 @@ WORD_FADE = 0.18
 HOVER_FADE = 0.12
 CARD_MOTION = 0.17
 CARD_SLIDE = 10
+CARD_RESERVE = 360
 
 
 def rounded_rectangle(cr, x, y, width, height, radius):
@@ -172,7 +173,7 @@ class Overlay(Gtk.ApplicationWindow):
         overlay.add(self.canvas)
 
         self.card = TranslationCard(
-            app.config, gdk_monitor.get_geometry(), self.destroy, app.lookup, app.save_result
+            app.config, gdk_monitor.get_geometry(), self.dismiss_card, app.lookup, app.save_result
         )
         self.card.set_no_show_all(True)
         self.card.connect("size-allocate", self.card_resized)
@@ -222,7 +223,9 @@ class Overlay(Gtk.ApplicationWindow):
 
     def on_key(self, _widget, event):
         if event.keyval == Gdk.KEY_Escape:
-            self.destroy()
+            # The first Esc closes only the card, the second one closes the overlay.
+            if not self.dismiss_card():
+                self.destroy()
             return True
         if event.keyval == Gdk.KEY_F2 and self.supports_transparency:
             self.live_background = not self.live_background
@@ -446,12 +449,23 @@ class Overlay(Gtk.ApplicationWindow):
             ox + left * self.scale, oy + top * self.scale,
             (right - left) * self.scale, (bottom - top) * self.scale,
         )
-        width = max(self.card.get_size_request()[0], self.card.get_preferred_width()[0])
-        height = self.card.get_preferred_height_for_width(width)[1]
+        # GTK3 preferred sizes include the widget margins, and the margins are exactly how
+        # the card is positioned. Measure the bare card so the old position does not leak in.
+        card = self.card
+        margin_x = card.get_margin_start() + card.get_margin_end()
+        margin_y = card.get_margin_top() + card.get_margin_bottom()
+        width = card.get_size_request()[0]
+        if width <= 0:
+            width = card.get_preferred_width()[1] - margin_x
+        height = card.get_preferred_height_for_width(width + margin_x)[1] - margin_y
+        area_width = self.canvas.get_allocated_width()
+        area_height = self.canvas.get_allocated_height()
+        if appear:
+            # The loading card is short; choose the side for the finished card so it does
+            # not jump from below to above when the translation arrives.
+            height = max(height, min(CARD_RESERVE, area_height // 2))
         x, y, side = place_card(
-            anchor, width, height,
-            self.canvas.get_allocated_width(), self.canvas.get_allocated_height(),
-            prefer=self.card_side,
+            anchor, width, height, area_width, area_height, prefer=self.card_side,
         )
         if not appear and (x, y, 1.0) == self.card_to and side == self.card_side:
             return False
@@ -466,9 +480,18 @@ class Overlay(Gtk.ApplicationWindow):
         return False
 
     def hide_card(self):
-        if self.card.get_visible():
+        if self.card.get_visible() and (self.card_to is None or self.card_to[2] > 0):
             x, y, _opacity = self.card_state
             self.move_card((x, y, 0.0))
+            return True
+        return False
+
+    def dismiss_card(self):
+        """Close the card and keep the highlighted words for another click."""
+        self.selection = []
+        self.selection_auto = False
+        self.canvas.queue_draw()
+        return self.hide_card()
 
     # ----------------------------------------------------------- selection
     def word_at(self, x, y):
