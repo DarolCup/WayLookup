@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "waylookup"
+version = "0.2.0"
+description = "Click-to-translate screenshot overlay for Hyprland, KDE Plasma and GNOME on Wayland"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "d11zy"}]
+classifiers = ["Programming Language :: Python :: 3", "Operating System :: POSIX :: Linux", "Development Status :: 4 - Beta"]
+
+[project.urls]
+Repository = "https://github.com/DarolCup/WayLookup"
+Issues = "https://github.com/DarolCup/WayLookup/issues"
+
+[project.scripts]
+waylookup = "waylookup.cli:main"
+
+[tool.setuptools.package-data]
+waylookup = ["style.css"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.setuptools]
+packages = ["waylookup"]
