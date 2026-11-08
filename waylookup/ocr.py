@@ -15,6 +15,10 @@ import unicodedata
 from .config import Config
 
 STRIP_OVERLAP = 48
+# Tesseract is single-threaded per strip; more strips than this mostly adds model loads.
+MAX_STRIPS = 4
+MIN_STRIP_HEIGHT = 240
+MIN_PARALLEL_PIXELS = 1_000_000
 LOG = logging.getLogger(__name__)
 
 
@@ -108,64 +112,113 @@ def png_size(png: bytes) -> tuple[int, int] | None:
     return None
 
 
-def split_image(png: bytes, config: Config) -> tuple[bytes, bytes, int] | None:
-    size = png_size(png)
-    if not size or config.ocr_psm not in (3, 11) or len(os.sched_getaffinity(0)) < 2:
+def strip_count(width: int, height: int) -> int:
+    if width * height < MIN_PARALLEL_PIXELS:
+        return 1
+    cpus = len(os.sched_getaffinity(0))
+    return max(1, min(MAX_STRIPS, cpus, height // MIN_STRIP_HEIGHT))
+
+
+def find_cuts(gray, count: int) -> list[int]:
+    """Pick horizontal cut rows near equal fractions, preferring rows between text lines."""
+    from PIL import Image, ImageFilter
+
+    width, height = gray.size
+    edges = gray.filter(ImageFilter.FIND_EDGES).crop((1, 1, width - 1, height - 1))
+    # rows[index] is the mean edge strength of image row index + 1.
+    rows = edges.resize((1, height - 2), Image.Resampling.BOX).tobytes()
+    reach = max(1, height // (count * 4))
+    cuts = []
+    for index in range(1, count):
+        target = height * index // count
+        low = max(2, target - reach)
+        high = min(height - 3, target + reach)
+        # A cut through a text line is still safe: every strip overlaps its neighbours and
+        # keeps only words whose centre lies inside it. Quiet rows simply keep layouts intact.
+        cuts.append(min(
+            range(low, high + 1),
+            key=lambda row: (max(rows[row - 2:row + 1]), abs(row - target)),
+        ))
+    return cuts
+
+
+def split_image(png: bytes, config: Config) -> list[tuple[bytes, int, int, int]] | None:
+    """Return (image, offset, keep_from, keep_to) strips for parallel Tesseract runs."""
+    gray = grayscale(png)
+    if gray is None:
         return None
-    width, height = size
-    if width * height < 2_000_000 or height < 720:
+    return split_gray(gray, config)
+
+
+def grayscale(png: bytes):
+    if not png_size(png):
         return None
     try:
-        from PIL import Image, ImageFilter
+        from PIL import Image
     except ImportError:
         return None
     with Image.open(io.BytesIO(png)) as image:
-        gray = image.convert("L")
-    edges = gray.filter(ImageFilter.FIND_EDGES).crop((1, 1, width - 1, height - 1))
-    rows = edges.resize((1, height - 2), Image.Resampling.BOX).tobytes()
-    # Parallelize only dense frames with a quiet horizontal gutter near the middle.
-    for half in (rows[:height // 2], rows[height // 2:]):
-        if sum(value >= 3 for value in half) < len(half) // 4:
-            return None
-    middle = height // 2
-    for cut in sorted(range(height * 2 // 5, height * 3 // 5), key=lambda row: abs(row - middle)):
-        if max(rows[cut - 5:cut + 5]) <= 1:
-            break
-    else:
+        return image.convert("L")
+
+
+def split_gray(gray, config: Config) -> list[tuple[bytes, int, int, int]] | None:
+    if config.ocr_psm not in (3, 11):
         return None
-    parts = []
-    for top, bottom in ((0, cut + STRIP_OVERLAP), (cut - STRIP_OVERLAP, height)):
+    width, height = gray.size
+    count = strip_count(width, height)
+    if count < 2:
+        return None
+    bounds = [0, *find_cuts(gray, count), height]
+    strips = []
+    for keep_from, keep_to in zip(bounds, bounds[1:]):
+        top = max(0, keep_from - STRIP_OVERLAP)
+        bottom = min(height, keep_to + STRIP_OVERLAP)
         output = io.BytesIO()
         gray.crop((0, top, width, bottom)).save(output, "PPM")
-        parts.append(output.getvalue())
-    return parts[0], parts[1], cut
+        strips.append((output.getvalue(), top, keep_from, keep_to))
+    return strips
+
+
+def recognize_strips(
+    strips: list[tuple[bytes, int, int, int]], config: Config, **options,
+) -> list[Word]:
+    with ThreadPoolExecutor(max_workers=len(strips) - 1) as workers:
+        futures = [
+            workers.submit(recognize_image, image, config, True, **options)
+            for image, *_ in strips[:-1]
+        ]
+        last = recognize_image(strips[-1][0], config, True, **options)
+        results = [future.result() for future in futures] + [last]
+    words = []
+    for index, ((_image, offset, keep_from, keep_to), found) in enumerate(zip(strips, results)):
+        for word in found:
+            centre = offset + word.y + word.height / 2
+            if keep_from <= centre < keep_to:
+                words.append(replace(
+                    word, y=word.y + offset, block=(word.block[0] + index, word.block[1])
+                ))
+    return words
 
 
 def recognize_primary(png: bytes, config: Config) -> list[Word]:
-    parts = split_image(png, config)
-    if parts is None:
+    strips = split_image(png, config)
+    if not strips:
         return recognize_image(png, config)
-    top, bottom, cut = parts
-    with ThreadPoolExecutor(max_workers=2) as workers:
-        upper = workers.submit(recognize_image, top, config, True)
-        lower = recognize_image(bottom, config, True)
-    lower_offset = cut - STRIP_OVERLAP
-    return [word for word in upper.result() if word.y + word.height / 2 < cut] + [
-        replace(word, y=word.y + lower_offset, block=(word.block[0] + 1, word.block[1]))
-        for word in lower if word.y + word.height / 2 >= STRIP_OVERLAP
-    ]
+    return recognize_strips(strips, config)
 
 
 def recognize_sparse(png: bytes, config: Config) -> list[Word]:
     sparse = replace(config, ocr_psm=11)
-    try:
-        from PIL import Image, ImageOps
-    except ImportError:
+    gray = grayscale(png)
+    if gray is None:
         return recognize_image(png, sparse)
-    with Image.open(io.BytesIO(png)) as image:
-        gray = image.convert("L")
     if sum(gray.histogram()[:128]) * 2 > gray.width * gray.height:
+        from PIL import ImageOps
+
         gray = ImageOps.invert(gray)
+    strips = split_gray(gray, sparse)
+    if strips:
+        return recognize_strips(strips, sparse, adaptive_threshold=True)
     output = io.BytesIO()
     gray.save(output, "PPM")
     return recognize_image(output.getvalue(), sparse, adaptive_threshold=True)

@@ -15,6 +15,7 @@ from waylookup.history import save_lookup
 from waylookup.hyprland import Hotkey
 from waylookup.ocr import (
     STRIP_OVERLAP, Word, merge_words, parse_tsv, recognize, repair_split_words, sentence_for,
+    split_gray,
 )
 from waylookup.translation import LookupResult, TranslationError, Translator, request_json
 
@@ -58,7 +59,10 @@ class OCRTests(unittest.TestCase):
         self.assertEqual(sentence_for([first, selected, unrelated, wrapped], selected), "Cross the river.")
         self.assertEqual(sentence_for([first, selected, unrelated, wrapped], wrapped), "Cross the river.")
 
-    @patch("waylookup.ocr.split_image", return_value=(b"top", b"bottom", 200))
+    @patch(
+        "waylookup.ocr.split_image",
+        return_value=[(b"top", 0, 0, 200), (b"bottom", 200 - STRIP_OVERLAP, 200, 400)],
+    )
     @patch("waylookup.ocr.recognize_image")
     def test_parallel_ocr_keeps_one_copy_and_restores_monitor_coordinates(self, ocr, _split):
         def recognize_strip(image, _config, _single_thread):
@@ -73,6 +77,32 @@ class OCRTests(unittest.TestCase):
         words = recognize(b"image", Config())
         self.assertEqual([(word.text, word.y) for word in words], [("top", 120), ("bottom", 210)])
         self.assertNotEqual(words[0].block, words[1].block)
+
+    @patch("waylookup.ocr.os.sched_getaffinity", return_value=set(range(8)))
+    def test_dense_screen_is_split_into_overlapping_strips(self, _cpus):
+        from PIL import Image, ImageDraw
+
+        image = Image.new("L", (1920, 1080), 255)
+        draw = ImageDraw.Draw(image)
+        # Glyph-like vertical strokes: solid bars would look quiet inside, unlike real text.
+        for y in range(0, 1080, 18):
+            for x in range(20, 1900, 6):
+                draw.rectangle((x, y, x + 2, y + 9), fill=0)
+        strips = split_gray(image, Config())
+        self.assertEqual(len(strips), 4)
+        self.assertEqual(strips[0][2], 0)
+        self.assertEqual(strips[-1][3], 1080)
+        for (_, _, _, end), (_, offset, start, _) in zip(strips, strips[1:]):
+            self.assertEqual(end, start)
+            self.assertEqual(offset, start - STRIP_OVERLAP)
+            # Cuts land in the white gaps between the drawn text lines.
+            self.assertGreaterEqual(start % 18, 10)
+
+    @patch("waylookup.ocr.os.sched_getaffinity", return_value={0})
+    def test_single_cpu_keeps_one_tesseract_run(self, _cpus):
+        from PIL import Image
+
+        self.assertIsNone(split_gray(Image.new("L", (1920, 1080), 255), Config()))
 
     def test_sparse_words_join_existing_lines_without_duplicate_highlights(self):
         first = Word("Take", 10, 10, 30, 15, 95, (1, 1), 1, 1)

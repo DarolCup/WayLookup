@@ -7,6 +7,7 @@ from math import ceil, floor
 from pathlib import Path
 import signal
 import threading
+from time import monotonic
 
 import cairo
 import gi
@@ -718,15 +719,21 @@ class Application(Gtk.Application):
 
         def run_capture():
             shown = False
+            started = monotonic()
 
             def show_primary(words):
                 nonlocal shown
                 if not self.stop.is_set():
                     shown = True
+                    LOG.info(
+                        "Первые рамки: %d мс (%d слов)",
+                        (monotonic() - started) * 1000, len(words),
+                    )
                     GLib.idle_add(self.show_capture, generation, png, monitor, words)
 
             try:
                 png, monitor = capture_screen(self.desktop, self.stop, choose_monitor)
+                LOG.info("Захват экрана: %d мс", (monotonic() - started) * 1000)
                 if not self.stop.is_set():
                     words = recognize(
                         png, config, on_primary=show_primary,
@@ -735,6 +742,7 @@ class Application(Gtk.Application):
                         ),
                     )
                     if shown:
+                        LOG.info("Полный OCR: %d мс", (monotonic() - started) * 1000)
                         GLib.idle_add(self.refine_capture, generation, words)
                     else:
                         show_primary(words)
