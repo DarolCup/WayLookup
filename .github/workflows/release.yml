@@ -1,0 +1,149 @@
+name: release
+# Builds release assets (sdist, wheel, RPM, Arch package) when the version in pyproject.toml
+# changes on main and publishes them as GitHub release v<version>. Can also be run by hand.
+on:
+  push:
+    branches: [main]
+    paths:
+      - pyproject.toml
+      - packaging/**
+      - .github/workflows/release.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      build: ${{ steps.v.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          VER=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VER" > /dev/null; then
+            echo "Tag v$VER already exists"
+            if [ "${{ github.event_name }}" = workflow_dispatch ]; then build=true; else build=false; fi
+          else
+            build=true
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+  dist:
+    needs: version
+    if: needs.version.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install build
+      - run: python -m unittest discover -s tests -v
+      - run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  rpm:
+    needs: [version, dist]
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Build RPM
+        env:
+          VER: ${{ needs.version.outputs.version }}
+        run: |
+          dnf install -y rpm-build python3-devel pyproject-rpm-macros systemd-rpm-macros 'dnf-command(builddep)'
+          TOP="$PWD/rpmbuild"
+          mkdir -p "$TOP/SOURCES" "$TOP/SPECS" out
+          cp "dist/waylookup-$VER.tar.gz" "$TOP/SOURCES/"
+          sed "s/^Version:.*/Version:        $VER/" packaging/waylookup.spec > "$TOP/SPECS/waylookup.spec"
+          rpmbuild -br --define "_topdir $TOP" "$TOP/SPECS/waylookup.spec" || true
+          dnf builddep -y "$TOP"/SRPMS/*.buildreqs.nosrc.rpm
+          rpmbuild -ba --define "_topdir $TOP" "$TOP/SPECS/waylookup.spec"
+          cp "$TOP"/RPMS/noarch/*.rpm "$TOP"/SRPMS/*.src.rpm out/
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm
+          path: out/*
+
+  arch:
+    needs: [version, dist]
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Build Arch package
+        env:
+          VER: ${{ needs.version.outputs.version }}
+        run: |
+          pacman -Syu --noconfirm --needed base-devel python python-build python-installer python-setuptools python-wheel
+          useradd -m builder
+          mkdir -p archbuild out
+          cp "dist/waylookup-$VER.tar.gz" archbuild/
+          sed "s/^pkgver=.*/pkgver=$VER/" packaging/PKGBUILD > archbuild/PKGBUILD
+          chown -R builder archbuild
+          su builder -c 'cd archbuild && makepkg -f --nodeps'
+          cp archbuild/*.pkg.tar.zst out/
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch
+          path: out/*
+
+  release:
+    needs: [version, dist, rpm, arch]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Checksums and release notes
+        env:
+          VER: ${{ needs.version.outputs.version }}
+        run: |
+          (cd assets && sha256sum * > SHA256SUMS && cat SHA256SUMS)
+          awk -v ver="$VER" '$0 == "## " ver {found=1; next} found && /^## / {exit} found {print}' CHANGELOG.md > notes.md
+          cat >> notes.md <<'EOF'
+
+          ### Как установить
+
+          **Fedora (KDE Plasma / GNOME)** — проще всего скриптом:
+
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/main/install-fedora.sh | bash
+          ```
+
+          Или RPM-пакетом из файлов ниже (выберите один способ): `sudo dnf install ./waylookup-*.noarch.rpm`
+
+          **Arch Linux + Hyprland:** `sudo pacman -U ./waylookup-*-any.pkg.tar.zst`
+
+          Проверка файлов: `sha256sum --ignore-missing --check SHA256SUMS`
+          EOF
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.version.outputs.version }}
+          name: WayLookup ${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          body_path: notes.md
+          files: assets/*
+          prerelease: ${{ contains(needs.version.outputs.version, 'b') || contains(needs.version.outputs.version, 'rc') }}
