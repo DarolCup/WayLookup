@@ -39,8 +39,8 @@ OCR и словари работают локально, на вашем ком�
 
 | Система | Окружение | Установка |
 | --- | --- | --- |
-| Fedora | KDE Plasma (Wayland) | Скрипт-установщик |
-| Fedora | GNOME (Wayland) | Скрипт-установщик |
+| Fedora | KDE Plasma (Wayland) | Скрипт-установщик или RPM |
+| Fedora | GNOME (Wayland) | Скрипт-установщик или RPM |
 | Arch Linux | Hyprland | Пакет `pacman` из Releases или исходники |
 
 > [!NOTE]
@@ -88,6 +88,21 @@ curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/main/install-fed
 | `--uninstall --purge` | То же, плюс удалить настройки, словари и историю |
 
 </details>
+
+### Или готовый RPM-пакет
+
+Скачайте `waylookup-*.noarch.rpm` со страницы [Releases](https://github.com/DarolCup/WayLookup/releases) и установите:
+
+```bash
+sudo dnf install ./waylookup-*.noarch.rpm
+waylookup dictionary install-defaults
+systemctl --user enable --now waylookup.service
+```
+
+Сочетание клавиш задайте в настройках WayLookup (`waylookup settings`) или в системных настройках клавиатуры с командой `waylookup capture`.
+
+> [!WARNING]
+> Выберите **один** способ: скрипт или RPM. Если WayLookup уже стоит через скрипт, сначала удалите его командой с `--uninstall` (см. ниже).
 
 ## 📦 Arch Linux + Hyprland
 
@@ -314,6 +329,7 @@ systemctl --user enable --now waylookup.service
 | Способ установки | Обновление | Удаление |
 | --- | --- | --- |
 | Fedora (скрипт) | Повторите команду [быстрой установки](#-быстрая-установка-fedora) | `curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/main/install-fedora.sh \| bash -s -- --uninstall` |
+| Fedora (RPM) | `sudo dnf upgrade ./waylookup-*.noarch.rpm` | `sudo dnf remove waylookup` |
 | Arch (пакет) | `waylookup quit`, затем `sudo pacman -U ./новый-пакет.pkg.tar.zst` | `sudo pacman -R waylookup` |
 | Исходники | `git pull --ff-only` и перезапуск | Удалите папку проекта |
 
