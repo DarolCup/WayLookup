@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/main/install-fed
 The installer installs dependencies using `sudo dnf`, starts the user service and enables it at login. Open **WayLookup** from the application menu for settings. Run `~/.local/bin/waylookup doctor` to check dependencies.
 
 - **GNOME.** Press **Alt+Q**. On the first capture, choose a screen, leave **Remember this selection** checked and click **Share**. WayLookup reuses the screen while the portal retains the permission. Use **Choose monitor** in WayLookup settings to switch screens. Choose a different shortcut in settings if Alt+Q is taken.
-- **KDE Plasma.** In **System Settings → Shortcuts**, bind `/home/YOUR_USER/.local/bin/waylookup capture` to your preferred shortcut.
+- **KDE Plasma.** Press **Alt+Q** while WayLookup is running. If the shortcut is taken, choose another one in WayLookup settings. To use a custom Plasma shortcut, disable automatic registration in WayLookup settings and bind `/home/YOUR_USER/.local/bin/waylookup capture` in System Settings.
 
 ### Build from source
 

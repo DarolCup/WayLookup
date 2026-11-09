@@ -607,11 +607,7 @@ class Settings(Gtk.ApplicationWindow):
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16, margin=24)
         self.add(root)
         root.pack_start(label("WayLookup", "word"), False, False, 0)
-        hint = (
-            "Настройте перевод один раз — дальше достаточно бинда."
-            if app.desktop != "plasma"
-            else "Назначьте команду waylookup capture в системных настройках клавиатуры."
-        )
+        hint = "Настройте перевод один раз — дальше достаточно бинда."
         root.pack_start(label(hint, "muted"), False, False, 0)
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -620,12 +616,10 @@ class Settings(Gtk.ApplicationWindow):
         scroller.add(grid)
         self.inputs = {}
         row = 0
-        specs = []
-        if app.desktop != "plasma":
-            specs.extend([
-                ("hotkey", "Бинд", None),
-                ("register_hotkey", "Регистрировать бинд", "bool"),
-            ])
+        specs = [
+            ("hotkey", "Бинд", None),
+            ("register_hotkey", "Регистрировать бинд", "bool"),
+        ]
         providers = [
             ("mymemory", "MyMemory · онлайн, без ключа"),
             ("google", "Google Cloud · ключ API"),
@@ -866,8 +860,7 @@ class Application(Gtk.Application):
         self.setup_tray()
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.quit_signal)
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self.quit_signal)
-        if self.desktop != "plasma":
-            GLib.idle_add(self.setup_hotkey)
+        GLib.idle_add(self.setup_hotkey)
         if self.desktop == "hyprland":
             threading.Thread(
                 target=watch_reload,
@@ -938,6 +931,10 @@ class Application(Gtk.Application):
                 from .gnome_shortcut import Hotkey
 
                 self.hotkey = Hotkey()
+            elif self.desktop == "plasma":
+                from .plasma_shortcut import Hotkey
+
+                self.hotkey = Hotkey(self.capture)
             else:
                 self.hotkey = HyprlandHotkey()
         return self.hotkey
@@ -953,10 +950,6 @@ class Application(Gtk.Application):
         return False
 
     def apply_config(self, config):
-        if self.desktop == "plasma":
-            config.save()
-            self.config = config
-            return
         old = self.config
         try:
             if config.register_hotkey:
@@ -980,7 +973,7 @@ class Application(Gtk.Application):
         if self.capturing:
             return
         if self.settings:
-            if self.desktop != "gnome" or getattr(self.settings, "chooser", None):
+            if self.desktop == "hyprland" or getattr(self.settings, "chooser", None):
                 return
             self.hidden_settings = self.settings
             self.settings.hide()
@@ -1166,7 +1159,7 @@ class Application(Gtk.Application):
                 chooser.destroy()
             self.settings.destroy()
         try:
-            if self.hotkey and self.desktop == "hyprland":
+            if self.hotkey and self.desktop in ("hyprland", "plasma"):
                 self.hotkey.remove()
         except Exception as error:
             LOG.warning("Не удалось удалить временный бинд: %s", error)
