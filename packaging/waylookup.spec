@@ -8,6 +8,7 @@ Source0:        %{name}-%{version}.tar.gz
 BuildArch:      noarch
 
 BuildRequires:  python3-devel
+BuildRequires:  python3-pillow
 BuildRequires:  pyproject-rpm-macros
 BuildRequires:  systemd-rpm-macros
 
@@ -24,6 +25,7 @@ Recommends:     (gtk-layer-shell if plasma-workspace)
 Recommends:     (libappindicator-gtk3 if plasma-workspace)
 Recommends:     (xdg-desktop-portal-gnome if gnome-shell)
 Recommends:     (pipewire-gstreamer if gnome-shell)
+Recommends:     (gstreamer1-plugins-base if gnome-shell)
 Recommends:     (gstreamer1-plugins-good if gnome-shell)
 
 %description

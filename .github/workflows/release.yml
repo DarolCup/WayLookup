@@ -1,6 +1,6 @@
 name: release
-# Builds release assets (sdist, wheel, RPM, Arch package) when the version in pyproject.toml
-# changes on main and publishes them as GitHub release v<version>. Can also be run by hand.
+# Builds packages when the version changes on main. Publishes the source distribution and
+# Fedora RPMs to GitHub Releases. The wheel and Arch package remain workflow artifacts.
 on:
   push:
     branches: [main]
@@ -43,7 +43,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: python -m pip install build
+      - run: python -m pip install build Pillow
       - run: python -m unittest discover -s tests -v
       - run: python -m build
       - uses: actions/upload-artifact@v4
@@ -54,7 +54,10 @@ jobs:
   rpm:
     needs: [version, dist]
     runs-on: ubuntu-latest
-    container: fedora:latest
+    strategy:
+      matrix:
+        fedora: [43, 44, 45]
+    container: fedora:${{ matrix.fedora }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -65,19 +68,24 @@ jobs:
         env:
           VER: ${{ needs.version.outputs.version }}
         run: |
-          dnf install -y rpm-build python3-devel pyproject-rpm-macros systemd-rpm-macros 'dnf-command(builddep)'
+          dnf install -y rpm-build python3-devel python3-pillow pyproject-rpm-macros systemd-rpm-macros 'dnf-command(builddep)'
           TOP="$PWD/rpmbuild"
           mkdir -p "$TOP/SOURCES" "$TOP/SPECS" out
           cp "dist/waylookup-$VER.tar.gz" "$TOP/SOURCES/"
           sed "s/^Version:.*/Version:        $VER/" packaging/waylookup.spec > "$TOP/SPECS/waylookup.spec"
-          rpmbuild -br --define "_topdir $TOP" "$TOP/SPECS/waylookup.spec" || true
-          dnf builddep -y "$TOP"/SRPMS/*.buildreqs.nosrc.rpm
+          status=0
+          rpmbuild -br --define "_topdir $TOP" "$TOP/SPECS/waylookup.spec" || status=$?
+          if [ "$status" = 11 ]; then
+            dnf builddep -y "$TOP"/SRPMS/*.buildreqs.nosrc.rpm
+          elif [ "$status" != 0 ]; then
+            exit "$status"
+          fi
           rpmbuild -ba --define "_topdir $TOP" "$TOP/SPECS/waylookup.spec"
           cp "$TOP"/RPMS/noarch/*.rpm "$TOP"/SRPMS/*.src.rpm out/
           ls -l out
       - uses: actions/upload-artifact@v4
         with:
-          name: rpm
+          name: rpm-${{ matrix.fedora }}
           path: out/*
 
   arch:
@@ -94,7 +102,7 @@ jobs:
         env:
           VER: ${{ needs.version.outputs.version }}
         run: |
-          pacman -Syu --noconfirm --needed base-devel python python-build python-installer python-setuptools python-wheel
+          pacman -Syu --noconfirm --needed base-devel python python-build python-installer python-pillow python-setuptools python-wheel
           useradd -m builder
           mkdir -p archbuild out
           cp "dist/waylookup-$VER.tar.gz" archbuild/
@@ -109,19 +117,26 @@ jobs:
           path: out/*
 
   release:
-    needs: [version, dist, rpm, arch]
+    needs: [version, dist, rpm]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          path: assets
+          name: dist
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rpm-*
+          path: rpms
           merge-multiple: true
       - name: Checksums and release notes
         env:
           VER: ${{ needs.version.outputs.version }}
         run: |
-          (cd assets && sha256sum * > SHA256SUMS && cat SHA256SUMS)
+          mkdir -p assets
+          cp "dist/waylookup-$VER.tar.gz" rpms/*.noarch.rpm assets/
+          (cd assets && sha256sum *.tar.gz *.rpm)
           awk -v ver="$VER" '$0 == "## " ver {found=1; next} found && /^## / {exit} found {print}' CHANGELOG.md > notes.md
           cat >> notes.md <<'EOF'
 
@@ -133,11 +148,11 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/main/install-fedora.sh | bash
           ```
 
-          Или RPM-пакетом из файлов ниже (выберите один способ): `sudo dnf install ./waylookup-*.noarch.rpm`
+          Или скачайте RPM с суффиксом вашей Fedora (`.fc43`, `.fc44` или `.fc45`)
+          и установите его через `sudo dnf install ./имя-пакета.rpm`.
+          Если WayLookup уже установлен через скрипт, обновитесь тем же скриптом.
 
-          **Arch Linux + Hyprland:** `sudo pacman -U ./waylookup-*-any.pkg.tar.zst`
-
-          Проверка файлов: `sha256sum --ignore-missing --check SHA256SUMS`
+          **Исходники:** архив `waylookup-<версия>.tar.gz` содержит исходный код и файлы сборки.
           EOF
       - uses: softprops/action-gh-release@v2
         with:

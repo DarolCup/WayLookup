@@ -1,8 +1,8 @@
 include LICENSE README.md
 include install-fedora.sh
-recursive-include packaging *.desktop *.service PKGBUILD
+recursive-include packaging *.desktop *.service *.spec PKGBUILD
 recursive-include examples *.json
-recursive-include docs *.md *.png
+recursive-include docs *.md *.png *.svg
 recursive-include tests *.py
 recursive-include scripts waylookup
 recursive-include scripts *.py

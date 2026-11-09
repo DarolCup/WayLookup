@@ -41,7 +41,7 @@ OCR и словари работают локально, на вашем ком�
 | --- | --- | --- |
 | Fedora | KDE Plasma (Wayland) | Скрипт-установщик или RPM |
 | Fedora | GNOME (Wayland) | Скрипт-установщик или RPM |
-| Arch Linux | Hyprland | Пакет `pacman` из Releases или исходники |
+| Arch Linux | Hyprland | Сборка пакета через `makepkg` или запуск из исходников |
 
 > [!NOTE]
 > Нужна сессия **Wayland**. X11 не поддерживается.
@@ -91,10 +91,10 @@ curl -fsSL https://raw.githubusercontent.com/DarolCup/WayLookup/main/install-fed
 
 ### Или готовый RPM-пакет
 
-Скачайте `waylookup-*.noarch.rpm` со страницы [Releases](https://github.com/DarolCup/WayLookup/releases) и установите:
+Скачайте `waylookup-*.noarch.rpm` с суффиксом своей версии Fedora со страницы [Releases](https://github.com/DarolCup/WayLookup/releases). Например, для Fedora 45:
 
 ```bash
-sudo dnf install ./waylookup-*.noarch.rpm
+sudo dnf install ./waylookup-0.2.0-1.fc45.noarch.rpm
 waylookup dictionary install-defaults
 systemctl --user enable --now waylookup.service
 ```
@@ -106,11 +106,12 @@ systemctl --user enable --now waylookup.service
 
 ## 📦 Arch Linux + Hyprland
 
-1. Откройте [Releases](https://github.com/DarolCup/WayLookup/releases), выберите последний релиз и скачайте из **Assets** файл `waylookup-*-any.pkg.tar.zst` и `SHA256SUMS`.
-2. В папке с файлами выполните:
+Скачайте `waylookup-0.2.0.tar.gz` со страницы [Releases](https://github.com/DarolCup/WayLookup/releases) и соберите пакет в папке с архивом:
 
 ```bash
-sha256sum --ignore-missing --check SHA256SUMS && sudo pacman -U ./waylookup-*-any.pkg.tar.zst
+sudo pacman -S --needed base-devel
+tar -xOf waylookup-0.2.0.tar.gz waylookup-0.2.0/packaging/PKGBUILD > PKGBUILD
+makepkg -si
 waylookup doctor
 waylookup daemon
 ```
